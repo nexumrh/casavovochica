@@ -561,7 +561,7 @@ function render() {
   if (S.view === 'mae') h = S.mae ? vMae() : vLoginMae();
   else if (S.view === 'filho') h = (S.filhoId && DB.get('filhos', S.filhoId)) ? vFilho() : vLoginFilho();
   else h = vConsulta();
-  const aviso = DB.erroAuth ? '<p class="faixa erro">O login anônimo não está ativado no Firebase. Ative em Authentication &gt; Método de login &gt; Anônimo.</p>' : DB.erro ? '<p class="faixa erro">Sem conexão com o banco de dados. Verifique a internet e, no Firebase, se o Firestore foi criado e as regras foram publicadas. Até lá, nada do que for feito aqui chega aos outros celulares.</p>' : '';
+  const aviso = (DB.erroAuth && PORTAL !== 'filho') ? '<p class="faixa erro">O login anônimo não está ativado no Firebase. Ative em Authentication &gt; Método de login &gt; Anônimo.</p>' : DB.erro ? '<p class="faixa erro">Sem conexão com o banco de dados. Verifique a internet e, no Firebase, se o Firestore foi criado e as regras foram publicadas. Até lá, nada do que for feito aqui chega aos outros celulares.</p>' : '';
   $('#app').innerHTML = h.replace('<main class="pag">', '<main class="pag">' + aviso);
   document.body.classList.toggle('corpo-padilha', !!$('#app .tema-padilha'));
   document.body.classList.toggle('com-lateral', !!$('#app .lateral'));
@@ -1605,7 +1605,7 @@ const DB = {
   cache:{}, fontes:{}, subs:{}, mode:'local', fs:null, erro:false, erroAuth:false, uid:null,
   async init() {
     COLS_TODAS.forEach(c => { this.cache[c] = {}; this.fontes[c] = {}; });
-    if (FIREBASE_CONFIG && window.firebase && firebase.auth) {
+    if (FIREBASE_CONFIG && window.firebase && (PORTAL === 'filho' || firebase.auth)) {
       try {
         firebase.initializeApp(FIREBASE_CONFIG);
         this.fs = firebase.firestore(); this.mode = 'firebase';
@@ -1704,7 +1704,21 @@ const meuUid = () => DB.uid || S.uidLocal;
 const slotId = (ent, data, hora) => `${ent}_${data}_${hora.replace(':', '')}`;
 
 async function iniciarFirebase() {
-  const fs = DB.fs, auth = firebase.auth();
+  const fs = DB.fs;
+  /* Portal dos Filhos: sem Firebase Authentication, o filho entra só com o telefone */
+  if (PORTAL === 'filho') {
+    await DB.ouvir('config', 'pub', fs.collection('config'));
+    await Promise.all([DB.ouvir('avisos', 'pub', fs.collection('avisos')), DB.ouvir('produtos', 'pub', fs.collection('produtos'))]);
+    if (S.filhoId) {
+      try {
+        await entrarFilho(S.filhoId);
+        const f = DB.get('filhos', S.filhoId);
+        if (!f || f.ativo === false) await sairFilho(true);
+      } catch (e) { console.warn(e); }
+    }
+    return;
+  }
+  const auth = firebase.auth();
   let u = await new Promise(res => { const off = auth.onAuthStateChanged(x => { off(); res(x); }); });
   if (PORTAL === 'mae') {
     await DB.ouvir('config', 'pub', fs.collection('config'));
@@ -1807,11 +1821,9 @@ async function loginFilho(e) {
   try {
     let fid;
     if (DB.mode === 'firebase') {
-      if (!DB.uid) throw {code:'sem-auth'};
       const h = await hashTel(t), a = await DB.ler('acessos', h);
       if (!a) throw {code:'nao-achou'};
       fid = a.filhoId;
-      await DB.fs.collection('vinculos').doc(DB.uid).set({filhoId:fid, h});
       await entrarFilho(fid);
       const f = DB.get('filhos', fid);
       if (!f || f.ativo === false) { await sairFilho(true); throw {code:'nao-achou'}; }
@@ -1823,13 +1835,13 @@ async function loginFilho(e) {
     S.filhoId = fid; localStorage.setItem('cv_filho', fid); S.tab = null; render();
   } catch (err) {
     console.error(err);
-    toast(err.code === 'nao-achou' ? 'Telefone não encontrado. Fale com a Mãe de Santo para conferir seu cadastro.' : err.code === 'sem-auth' ? 'O login anônimo ainda não está ativado no Firebase.' : 'Não foi possível entrar. Verifique a internet.');
+    toast(err.code === 'nao-achou' ? 'Telefone não encontrado. Fale com a Mãe de Santo para conferir seu cadastro.' : 'Não foi possível entrar. Verifique a internet.');
     if ($('#btn-entrar')) $('#btn-entrar').disabled = false;
   }
   return false;
 }
 async function sairFilho(silencioso) {
-  if (DB.mode === 'firebase') { DB.parar('eu'); try { if (DB.uid) await DB.fs.collection('vinculos').doc(DB.uid).delete(); } catch (e) {} }
+  if (DB.mode === 'firebase') DB.parar('eu');
   S.filhoId = null; localStorage.removeItem('cv_filho');
   if (silencioso !== true) render();
 }
