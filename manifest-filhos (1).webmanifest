@@ -1,0 +1,32 @@
+{
+  "id": "./filhos.html",
+  "name": "Filhos da Casa | Casa Vovó Chica de Aruanda",
+  "short_name": "Filhos da Casa",
+  "description": "Portal dos Filhos: mensalidades, conta da loja, giras e mural da casa.",
+  "lang": "pt-BR",
+  "start_url": "./filhos.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#FFFFFF",
+  "theme_color": "#4A2574",
+  "icons": [
+    {
+      "src": "icones/filhos-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icones/filhos-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icones/filhos-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
