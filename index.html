@@ -407,6 +407,16 @@ dialog h2{color:var(--anil);font-size:24px;margin-bottom:14px}
 .cartaz-qr img{width:90mm;height:90mm;image-rendering:pixelated}
 .cartaz-txt{font-size:17px;max-width:150mm;margin:16px auto 8px}
 .cartaz-url{font-size:12px;color:#666;word-break:break-all}
+.horarios-dia{display:grid;gap:12px;margin:0 0 14px;padding:12px;border-radius:14px;background:#F7F4FB}
+.slots{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.slot{border:1.5px solid var(--linha);background:#fff;border-radius:10px;padding:6px 10px;font-weight:600;font-size:14px;cursor:pointer;color:var(--cafe)}
+.slot.ocupado{background:#EBE1F7;color:#4A2574;border-color:transparent;cursor:default}
+.slot.fechado{background:repeating-linear-gradient(135deg,#F7F4FB 0 6px,#E6DEF0 6px 12px);color:#8A8296;text-decoration:line-through}
+.legenda-slot{font-size:13px;color:var(--muted);margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.legenda-slot .slot{font-size:12px;padding:2px 8px;cursor:default}
+.anotacao{background:#FFF8E8;border-left:3px solid var(--ouro);border-radius:8px;padding:8px 10px;margin:6px 0;font-size:15px}
+.total-pedido{font-size:17px;margin:4px 0 12px}
+details.hist{margin-top:12px}details.hist summary{cursor:pointer;color:var(--anil2);font-weight:500}
 @media (max-width:520px){.ficha{grid-template-columns:1fr}.ficha dd{margin-bottom:6px}
 .sec{padding:16px}.boas-vindas{padding:18px}.boas-vindas img{width:64px;height:64px;flex-basis:64px}.boas-vindas h2{font-size:23px}.conta-card .valor{font-size:34px}}
 </style>
@@ -486,105 +496,15 @@ function brcode(chave, tipo, valor, nome, cidade) {
 function qrImg(txt) { try { const q = qrcode(0, 'M'); q.addData(txt); q.make(); return q.createImgTag(5, 8, 'QR Code PIX'); } catch (e) { return ''; } }
 
 /* ---------- banco de dados ---------- */
-const COLS_TODAS = ['filhos','cobrancas','avisos','entidades','consultas','config','produtos','mural','espera','links'];
-const COLS = {mae:COLS_TODAS, filho:['filhos','cobrancas','avisos','config','mural'], consulta:['entidades','consultas','config']}[PORTAL];
-const DB = {
-  cache:{}, mode:'local', fs:null, erro:false,
-  async init() {
-    COLS_TODAS.forEach(c => this.cache[c] = {});
-    if (FIREBASE_CONFIG && window.firebase) {
-      try {
-        firebase.initializeApp(FIREBASE_CONFIG);
-        this.fs = firebase.firestore();
-        if (APP) try { await this.fs.enablePersistence({synchronizeTabs:true}); } catch (e) { console.warn('Sem cache offline:', e.code); }
-        this.mode = 'firebase';
-        await Promise.all(COLS.map(c => new Promise(res => {
-          let primeira = true;
-          this.fs.collection(c).onSnapshot(snap => {
-            const m = {}; snap.forEach(d => m[d.id] = {id:d.id, ...d.data()});
-            this.cache[c] = m; this.erro = false;
-            if (primeira) { primeira = false; res(); } else this.emit();
-          }, err => { console.error(c, err); this.erro = true; res(); });
-        })));
-        if (PORTAL === 'mae' && firebase.auth) await new Promise(res => {
-          let p = true;
-          firebase.auth().onAuthStateChanged(u => {
-            S.mae = !!u; S.usuario = u ? u.email : '';
-            if (u) aposLogin();
-            if (p) { p = false; res(); } else render();
-          });
-        });
-        return;
-      } catch (e) { console.error('Firebase indisponível.', e); this.mode = 'local'; }
-    }
-    this.erro = true;
-    S.mae = sessionStorage.getItem('cv_mae') === '1';
-    try { const raw = localStorage.getItem('cvca_db'); if (raw) Object.assign(this.cache, JSON.parse(raw)); } catch (e) {}
-    COLS_TODAS.forEach(c => this.cache[c] = this.cache[c] || {});
-  },
-  all(c) { return Object.values(this.cache[c] || {}); },
-  get(c, id) { return (this.cache[c] || {})[id]; },
-  async set(c, id, data) {
-    id = id || uid(); const doc = {...data}; delete doc.id;
-    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).set(doc);
-    this.cache[c][id] = {id, ...doc}; this.persist(); this.emit(); return id;
-  },
-  async update(c, id, patch) {
-    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).set(patch, {merge:true});
-    this.cache[c][id] = {...this.cache[c][id], ...patch}; this.persist(); this.emit();
-  },
-  async del(c, id) {
-    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).delete();
-    delete this.cache[c][id]; this.persist(); this.emit();
-  },
-  async reserve(c, id, data) {
-    const cur = this.get(c, id);
-    if (cur && cur.status !== 'cancelada') return false;
-    if (this.mode === 'firebase') {
-      const ref = this.fs.collection(c).doc(id);
-      const ok = await this.fs.runTransaction(async t => {
-        const s = await t.get(ref);
-        if (s.exists && s.data().status !== 'cancelada') return false;
-        t.set(ref, data); return true;
-      });
-      if (!ok) return false;
-    }
-    this.cache[c][id] = {id, ...data}; this.persist(); this.emit(); return true;
-  },
-  /* comprovantes ficam numa coleção à parte e só são baixados quando alguém abre */
-  async putComp(data) {
-    const id = uid();
-    if (this.mode === 'firebase') await this.fs.collection('comprovantes').doc(id).set(data);
-    else localStorage.setItem('cvca_comp_' + id, JSON.stringify(data));
-    return id;
-  },
-  async getComp(id) {
-    if (this.mode === 'firebase') { const s = await this.fs.collection('comprovantes').doc(id).get(); return s.exists ? s.data() : null; }
-    const r = localStorage.getItem('cvca_comp_' + id); return r ? JSON.parse(r) : null;
-  },
-  persist() { if (this.mode === 'local') try { localStorage.setItem('cvca_db', JSON.stringify(this.cache)); } catch (e) {} },
-  emit() { if (editando(document.activeElement)) { S.pend = true; return; } render(); }
-};
 const editando = a => a && $('#app').contains(a) && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName);
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pend && !editando(document.activeElement)) { S.pend = false; render(); } }, 400));
 
 const ehPadilha = e => !!e && (e.tema ? e.tema === 'padilha' : /padilha/i.test(e.nome || ''));
-async function aposLogin() {
-  try {
-    if (DB.mode === 'firebase' && !cfg().authCriada) await DB.update('config', 'casa', {authCriada:true});
-    if (!DB.all('entidades').length) await DB.set('entidades', null, {nome:'Vovó Chica de Aruanda', linha:'Preta Velha', dias:[3], ini:'19:00', fim:'21:00', int:20, horarios:gerarHorarios('19:00','21:00',20), ativa:true, tema:'roxo'});
-    if (!cfg().seedPadilha) {
-      if (!DB.all('entidades').some(ehPadilha)) await DB.set('entidades', null, {nome:'Senhorita Maria Padilha', linha:'Pombagira', dias:[5], ini:'20:00', fim:'22:00', int:20, horarios:gerarHorarios('20:00','22:00',20), ativa:true, tema:'padilha'});
-      await DB.update('config', 'casa', {seedPadilha:true});
-    }
-  } catch (e) { console.error(e); }
-}
-
 const CFG_DEF = {
   casa:'Casa Vovó Chica de Aruanda', cidade:'Foz do Iguacu', telCasa:'', endereco:'', orientacoes:'',
   pixMensalidade:'45998424409', tipoPixMensalidade:'telefone', valorPadrao:50, diaVenc:10,
   nomeLoja:'Caminhos de Padilha', pixLoja:'88118886972', tipoPixLoja:'cpf',
-  linkFilhos:'', linkConsulta:'', bloqueios:[]
+  linkFilhos:'', linkConsulta:'', bloqueios:[], faltasLimite:2, sinalFalta:20
 };
 const cfg = () => { const s = DB.get('config','casa') || {}; const c = {...CFG_DEF, ...s}; if (s.pix && !s.pixMensalidade) c.pixMensalidade = s.pix; return c; };
 const linkPortal = h => h === 'filho' ? (cfg().linkFilhos || new URL('filhos.html', location.href).href) : (cfg().linkConsulta || new URL('consulta.html', location.href).href);
@@ -592,7 +512,7 @@ const linkConfirmar = id => { const u = new URL(linkPortal('consulta')); u.searc
 
 /* ---------- contas: mensalidade e loja ---------- */
 const contaDe = c => c.conta || 'mensalidade';
-const contaNome = k => k === 'loja' ? 'Loja ' + cfg().nomeLoja : k === 'consulta' ? 'Consulta' : 'Mensalidade';
+const contaNome = k => k === 'loja' ? 'Loja ' + cfg().nomeLoja : k === 'consulta' ? 'Consulta' : k === 'contribuicao' ? 'Contribuição' : 'Mensalidade';
 const contaCor = k => k === 'loja' ? 'var(--padilha)' : 'var(--anil)';
 const pixDe = k => { const c = cfg(); return k === 'loja' ? {chave:c.pixLoja, tipo:c.tipoPixLoja, nome:c.nomeLoja} : {chave:c.pixMensalidade, tipo:c.tipoPixMensalidade, nome:c.casa}; };
 const stCob = c => c.status === 'pago' ? 'pago' : c.status === 'informado' ? 'conferir' : c.venc < hoje() ? 'atrasado' : 'aberto';
@@ -627,7 +547,9 @@ const S = {
   view:PORTAL, tab:null, pend:false,
   mae: false, usuario:'',
   filhoId: localStorage.getItem('cv_filho'),
-  ag: params.get('entidade') ? {ent:params.get('entidade')} : {}, consultaFeita:null, minhasTel: localStorage.getItem('cv_meu_tel'),
+  ag: (() => { const a = {}, d = params.get('data'); if (params.get('entidade')) a.ent = params.get('entidade'); if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) { a.data = d; a.mes = d.slice(0, 7); } if (params.get('nome')) a.nome = params.get('nome'); if (params.get('tel')) a.tel = fmtTel(params.get('tel')); if (params.get('ret')) a.retornoDe = params.get('ret'); return a; })(),
+  uidLocal: localStorage.getItem('cv_uid') || (() => { const u = 'local-' + Math.random().toString(36).slice(2); try { localStorage.setItem('cv_uid', u); } catch (e) {} return u; })(),
+  consultaFeita:null, minhasTel: localStorage.getItem('cv_meu_tel'),
   fin:{conta:'mensalidade', ano:new Date().getFullYear()}, comp:hoje().slice(0,7),
   cm:{mes:hoje().slice(0,7), dia:hoje()}, fano:new Date().getFullYear(),
   confirmar: params.get('confirmar'), avaliar: params.get('avaliar'), nota:null, comAval:'', filaOk:''
@@ -639,7 +561,7 @@ function render() {
   if (S.view === 'mae') h = S.mae ? vMae() : vLoginMae();
   else if (S.view === 'filho') h = (S.filhoId && DB.get('filhos', S.filhoId)) ? vFilho() : vLoginFilho();
   else h = vConsulta();
-  const aviso = DB.erro ? '<p class="faixa erro">Sem conexão com o banco de dados. Verifique a internet e, no Firebase, se o Firestore foi criado e as regras foram publicadas. Até lá, nada do que for feito aqui chega aos outros celulares.</p>' : '';
+  const aviso = DB.erroAuth ? '<p class="faixa erro">O login anônimo não está ativado no Firebase. Ative em Authentication &gt; Método de login &gt; Anônimo.</p>' : DB.erro ? '<p class="faixa erro">Sem conexão com o banco de dados. Verifique a internet e, no Firebase, se o Firestore foi criado e as regras foram publicadas. Até lá, nada do que for feito aqui chega aos outros celulares.</p>' : '';
   $('#app').innerHTML = h.replace('<main class="pag">', '<main class="pag">' + aviso);
   document.body.classList.toggle('corpo-padilha', !!$('#app .tema-padilha'));
   document.body.classList.toggle('com-lateral', !!$('#app .lateral'));
@@ -658,6 +580,8 @@ const ICO_ABA = {
   contas:'<path d="M6 2.5h12v19l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6"/>',
   sair:'<path d="M15 4h3.5A1.5 1.5 0 0 1 20 5.5v13a1.5 1.5 0 0 1-1.5 1.5H15"/><path d="M10 16.5L5.5 12 10 7.5M5.5 12H15"/>',
   menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',
+  pedidos:'<path d="M5 8h14l-1.2 11.2A2 2 0 0 1 15.8 21H8.2a2 2 0 0 1-2-1.8z"/><path d="M9 8V6.5a3 3 0 0 1 6 0V8"/>',
+  dados:'<rect x="3" y="5" width="18" height="14" rx="2.5"/><circle cx="9" cy="11" r="2.2"/><path d="M5.8 16c.6-1.6 1.8-2.4 3.2-2.4s2.6.8 3.2 2.4M14.5 10h4M14.5 13.5h3"/>',
   links:'<path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1-1"/>',
   baixar:'<path d="M12 3.5v11M7.5 10.5L12 15l4.5-4.5"/><path d="M4.5 16.5v2.5A1.5 1.5 0 0 0 6 20.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/>'
 };
@@ -747,12 +671,10 @@ async function esqueciSenha() {
   try { await firebase.auth().sendPasswordResetEmail(email); toast(`Se ${email} for o e-mail de acesso, o link para criar uma nova senha chega em instantes. Confira também o spam.`); }
   catch (e) { console.error(e); toast(e.code === 'auth/user-not-found' || e.code === 'auth/invalid-email' ? 'Confira o e-mail digitado.' : msgAuth(e)); }
 }
-async function sairMae() { if (temAuth()) await firebase.auth().signOut(); S.mae = false; sessionStorage.removeItem('cv_mae'); render(); }
-
-const ABAS_MAE = [['painel','Painel'],['financeiro','Financeiro'],['filhos','Filhos'],['agenda','Agenda da casa'],['mural','Mural'],['consultas','Consultas'],['links','Links e QR Codes'],['config','Configurações']];
+const ABAS_MAE = [['painel','Painel'],['financeiro','Financeiro'],['filhos','Filhos'],['pedidos','Pedidos'],['agenda','Agenda da casa'],['mural','Mural'],['consultas','Consultas'],['links','Links e QR Codes'],['config','Configurações']];
 function vMae() {
   const t = S.tab || 'painel';
-  const v = {painel:mPainel, financeiro:mFin, filhos:mFilhos, agenda:mAgenda, mural:mMural, consultas:mCons, links:mLinks, config:mConfig}[t];
+  const v = {painel:mPainel, financeiro:mFin, filhos:mFilhos, agenda:mAgenda, mural:mMural, consultas:mCons, links:mLinks, pedidos:mPedidos, config:mConfig}[t];
   return `${cabecalho('Portal da Mãe de Santo', 'sairMae()', ABAS_MAE, t)}<main class="pag">${v()}</main>`;
 }
 
@@ -883,20 +805,6 @@ function msgAviso(a) {
   const t = TIPOS[a.tipo] || TIPOS.comunicado;
   return `*${t.n}: ${a.titulo}*${a.data ? '\n' + cap(fmtData(a.data)) + (a.hora ? ' às ' + a.hora : '') : ''}${a.texto ? '\n\n' + a.texto : ''}${a.convoca ? '\n\nConfirme sua presença no portal: ' + linkPortal('filho') : ''}\n\n${cfg().casa}`;
 }
-function formAviso(id) {
-  const a = id ? DB.get('avisos', id) : {tipo:'gira', convoca:true};
-  modal(id ? 'Editar' : 'Novo evento ou comunicado', `
-    <label>Tipo<select name="tipo">${Object.entries(TIPOS).map(([k,t]) => `<option value="${k}" ${a.tipo === k ? 'selected' : ''}>${t.n}</option>`).join('')}</select></label>
-    <label>Título<input name="titulo" required value="${esc(a.titulo)}" placeholder="Ex.: Gira de Pretos Velhos"></label>
-    <div class="grade"><label>Data<input type="date" name="data" value="${a.data || ''}"></label><label>Horário<input type="time" name="hora" value="${a.hora || ''}"></label></div>
-    <p class="sub" style="margin-top:-6px">Comunicados gerais podem ficar sem data.</p>
-    <label>Mensagem<textarea name="texto" rows="4" placeholder="Ex.: Todos de branco. Trazer uma vela branca.">${esc(a.texto)}</textarea></label>
-    <label class="chk"><input type="checkbox" name="convoca" ${a.convoca ? 'checked' : ''}> Pedir para os filhos confirmarem presença</label>`,
-  async d => {
-    await DB.set('avisos', id, {tipo:d.tipo, titulo:d.titulo.trim(), data:d.data || '', hora:d.hora || '', texto:d.texto || '', convoca:!!d.convoca, presencas:a.presencas || {}, criadoEm:a.criadoEm || new Date().toISOString()});
-    toast(id ? 'Atualizado.' : 'Publicado no portal dos filhos.');
-  }, id ? `<button type="button" class="btn perigo" onclick="excluir('avisos','${id}','Excluir este item da agenda?')">Excluir</button>` : '', id ? 'Salvar' : 'Publicar');
-}
 function verPresencas(id) {
   const a = DB.get('avisos', id), p = a.presencas || {};
   const fs = DB.all('filhos').filter(f => f.ativo !== false).sort(byNome);
@@ -961,6 +869,8 @@ function mConfig() {
     <label>Nome da loja<input name="nomeLoja" required value="${esc(c.nomeLoja)}"></label>
     <div class="grade"><label>Chave PIX da loja<input name="pixLoja" value="${esc(c.pixLoja)}"></label><label>Tipo da chave${selTipo('tipoPixLoja', c.tipoPixLoja)}</label></div>
     <h2>Consultas</h2>
+    <div class="grade"><label>Faltas para exigir pagamento antecipado<input type="number" name="faltasLimite" min="1" value="${c.faltasLimite}"></label><label>Sinal para quem falta (R$)<input name="sinalFalta" inputmode="decimal" value="${fmtNum(c.sinalFalta)}"></label></div>
+    <p class="sub" style="margin-top:-6px">O sinal vale para entidades sem valor de consulta. Nas que têm valor, é pedido o valor da consulta.</p>
     <label>Orientações para o consulente<textarea name="orientacoes" rows="3" placeholder="Ex.: Chegar 15 minutos antes, de roupa clara.">${esc(c.orientacoes)}</textarea></label>
     <h2>Links dos portais</h2>
     <p class="sub">Usados nas mensagens de WhatsApp. Deixe vazio se os três arquivos estão no mesmo repositório.</p>
@@ -977,7 +887,7 @@ async function salvarCfg(e) {
   const d = Object.fromEntries(new FormData(e.target)), atual = cfg();
   const novo = {...atual};
   ['casa','endereco','cidade','pixMensalidade','tipoPixMensalidade','nomeLoja','pixLoja','tipoPixLoja','orientacoes','linkFilhos','linkConsulta'].forEach(k => novo[k] = String(d[k] || '').trim());
-  novo.telCasa = normTel(d.telCasa); novo.valorPadrao = num(d.valorPadrao); novo.diaVenc = Math.min(31, Math.max(1, parseInt(d.diaVenc) || 10));
+  novo.telCasa = normTel(d.telCasa); novo.faltasLimite = Math.max(1, parseInt(d.faltasLimite) || 2); novo.sinalFalta = num(d.sinalFalta); novo.valorPadrao = num(d.valorPadrao); novo.diaVenc = Math.min(31, Math.max(1, parseInt(d.diaVenc) || 10));
   delete novo.pix; delete novo.senhaMae;
   try { await DB.set('config', 'casa', novo); toast('Configurações salvas.'); }
   catch (err) { console.error(err); toast('Não foi possível salvar. Verifique a internet.'); }
@@ -1010,16 +920,7 @@ function vLoginFilho() {
   return telaLogin('Portal dos Filhos', `<div class="campo">${ICO.tel}<input name="t" inputmode="tel" required placeholder="Seu celular com DDD" aria-label="Celular com DDD" autocomplete="tel"></div>
   <p class="sub" style="margin:-6px 2px 6px;font-size:14px">Use o número que a Mãe de Santo cadastrou.</p>`, 'loginFilho');
 }
-function loginFilho(e) {
-  e.preventDefault();
-  const t = normTel(new FormData(e.target).get('t'));
-  const f = DB.all('filhos').find(x => normTel(x.tel) === t && x.ativo !== false);
-  if (!f) { toast('Telefone não encontrado. Fale com a Mãe de Santo para conferir seu cadastro.'); return false; }
-  S.filhoId = f.id; localStorage.setItem('cv_filho', f.id); S.tab = null; render(); return false;
-}
-function sairFilho() { S.filhoId = null; localStorage.removeItem('cv_filho'); render(); }
-
-const ABAS_FILHO = [['inicio','Início'],['contas','Minhas contas'],['agenda','Agenda da casa'],['mural','Mural']];
+const ABAS_FILHO = [['inicio','Início'],['contas','Minhas contas'],['agenda','Agenda da casa'],['mural','Mural'],['pedidos','Pedidos'],['dados','Meus dados']];
 function contaCard(f, k) {
   const c = cfg(), l = abertas(f.id, k), t = sum(l), conf = cobsDe(f.id, k).filter(x => x.status === 'informado'), rec = l.filter(x => x.motivoRecusa);
   const atras = l.some(x => x.venc < hoje()), p = pixDe(k);
@@ -1064,55 +965,21 @@ function enviarComprovante(k, preId) {
 }
 async function presenca(id, v) {
   const a = DB.get('avisos', id);
-  await DB.update('avisos', id, {presencas:{...(a.presencas || {}), [S.filhoId]:v}});
+  try {
+    /* no Firebase envia só a resposta deste filho; o servidor junta com as dos outros */
+    if (DB.mode === 'firebase') { await DB.fs.collection('avisos').doc(id).set({presencas:{[S.filhoId]:v}}, {merge:true}); DB.cache.avisos[id] = {...a, presencas:{...(a.presencas || {}), [S.filhoId]:v}}; render(); }
+    else await DB.update('avisos', id, {presencas:{...(a.presencas || {}), [S.filhoId]:v}});
+  } catch (e) { console.error(e); return toast('Não foi possível registrar. Verifique a internet.'); }
   toast(v === 'sim' ? 'Presença confirmada. Axé!' : 'A Mãe de Santo foi avisada que você não poderá ir.');
 }
 
 /* ============================================================
    PORTAL DO CONSULENTE (estilo Agenda Atlas)
    ============================================================ */
-function slotsLivres(e, data) {
-  const ocup = new Set(DB.all('consultas').filter(c => c.entidadeId === e.id && c.data === data && c.status !== 'cancelada').map(c => c.hora));
-  let l = (e.horarios || []).filter(h => !ocup.has(h));
-  if (data === hoje()) { const n = new Date(), m = n.getHours()*60 + n.getMinutes(); l = l.filter(h => toMin(h) > m + 30); }
-  return l;
-}
 function boasVindas() {
   const k = cfg();
   return `<section class="boas-vindas"><img src="${LOGO}" alt="Selo da ${esc(k.casa)}"><div><h2>Agende sua consulta</h2><p>Atendimento particular com as entidades da ${esc(k.casa)}.</p>${k.endereco ? `<p>${esc(k.endereco)}</p>` : ''}</div></section>`;
 }
-function vConsulta() {
-  if (S.avaliar) return vAvaliar();
-  if (S.confirmar) return vConfirmar();
-  if (S.consultaFeita && DB.get('consultas', S.consultaFeita)) { const c = DB.get('consultas', S.consultaFeita); return `${cabecalho('Agendar consulta')}<main class="pag"><div class="${ehPadilha(DB.get('entidades', c.entidadeId)) ? 'tema-padilha' : ''}">${ticket(c, true)}</div></main>`; }
-  const A = S.ag, bl = new Set(cfg().bloqueios || []);
-  const ents = DB.all('entidades').filter(e => e.ativa !== false && (e.dias || []).length && (e.horarios || []).length).sort(byNome);
-  let h = boasVindas() + `<section class="sec"><h2><span class="passo">1</span>Com qual entidade?</h2>${ents.length ? `<div class="escolhas">${ents.map(e => `<button class="${A.ent === e.id ? 'on' : ''} ${ehPadilha(e) ? 'ent-padilha' : ''}" onclick="escolherEnt('${e.id}')"><b>${esc(e.nome)}</b>${e.linha ? `<span>${esc(e.linha)}</span>` : ''}<span>${e.dias.map(d => DIAS[d]).join(', ')}, a partir das ${e.ini}</span>${e.valor ? `<span>Consulta ${brl(e.valor)}</span>` : ''}</button>`).join('')}</div>` : '<p class="vazio">A agenda de consultas está fechada no momento.</p>'}</section>`;
-  const e = A.ent && DB.get('entidades', A.ent);
-  if (e) {
-    const mes = A.mes || hoje().slice(0,7), [y, m] = mes.split('-').map(Number), lim = iso(new Date(Date.now() + 60*864e5));
-    const grade = gradeMes(mes, (ds, d) => {
-      const ok = ds >= hoje() && ds <= lim && e.dias.includes(pd(ds).getDay()) && !bl.has(ds);
-      const livres = ok ? slotsLivres(e, ds).length : 0;
-      return `<button class="dia ${A.data === ds ? 'sel' : ''} ${ds === hoje() ? 'hoje' : ''} ${livres ? 'livre' : ''} ${ok && !livres ? 'lotado' : ''}" ${ok ? '' : 'disabled'} onclick="S.ag.data='${ds}';S.ag.hora=null;render()" aria-label="${fmtData(ds)}${ok ? (livres ? ', ' + livres + ' horários livres' : ', lotado') : ', sem atendimento'}"><span>${d}</span>${livres ? `<i>${livres}</i>` : ''}</button>`;
-    });
-    h += `<section class="sec"><h2><span class="passo">2</span>Escolha o dia</h2><div class="cal-cab"><span class="mes-nome">${MESES_L[m-1]} de ${y}</span><div class="ano-nav"><button class="btn-ico" ${mes > hoje().slice(0,7) ? '' : 'disabled'} onclick="S.ag.mes=somaMes('${mes}',-1);render()" aria-label="Mês anterior">‹</button><button class="btn-ico" ${mes < lim.slice(0,7) ? '' : 'disabled'} onclick="S.ag.mes=somaMes('${mes}',1);render()" aria-label="Próximo mês">›</button></div></div>${grade}<p class="legenda-c"><i></i>Dias com horário livre (o número mostra quantos)</p></section>`;
-    if (A.data) {
-      const livres = slotsLivres(e, A.data);
-      h += `<section class="sec"><h2><span class="passo">3</span>Escolha o horário</h2><p class="sub">${cap(fmtData(A.data))}</p>${livres.length ? `<div class="escolhas horas">${livres.map(x => `<button class="${A.hora === x ? 'on' : ''}" onclick="S.ag.hora='${x}';render()">${x}</button>`).join('')}</div>` : filaForm()}</section>`;
-      if (A.hora && livres.includes(A.hora)) h += `<section class="sec"><h2><span class="passo">4</span>Seus dados</h2><form class="form-cons" onsubmit="return agendar(event)">
-        <label>Nome completo<input required value="${esc(A.nome || '')}" oninput="S.ag.nome=this.value" autocomplete="name"></label>
-        <label>Celular (WhatsApp)<input required inputmode="tel" value="${esc(A.tel || '')}" oninput="S.ag.tel=this.value" placeholder="(45) 99999-9999" autocomplete="tel"></label>
-        <label>Quer adiantar o motivo da consulta? (opcional)<textarea rows="2" oninput="S.ag.motivo=this.value">${esc(A.motivo || '')}</textarea></label>
-        <label class="chk"><input type="checkbox" required ${A.lgpd ? 'checked' : ''} onchange="S.ag.lgpd=this.checked"><span>Autorizo a casa a usar meu nome e celular somente para este agendamento e os lembretes dele (LGPD).</span></label>
-        ${e.valor ? `<p class="faixa">Valor da consulta: <b>${brl(e.valor)}</b>. Você pode pagar antecipado pelo PIX depois de agendar ou pagar no dia.</p>` : ''}
-        <button class="btn">Agendar com ${esc(e.nome)}, ${fmtData(A.data)} às ${A.hora}</button></form></section>`;
-    }
-  }
-  h += `<section class="sec"><h2>Já agendou?</h2><form class="linha-form" onsubmit="return buscarMinhas(event)"><label>Seu celular<input name="t" inputmode="tel" required value="${esc(fmtTel(S.minhasTel || ''))}" autocomplete="tel"></label><button class="btn sec2">Ver minhas consultas</button></form>${S.minhasTel ? `<div style="margin-top:10px">${minhas()}</div>` : ''}</section>`;
-  return `${cabecalho('Agendar consulta')}<main class="pag"><div class="${ehPadilha(e) ? 'tema-padilha' : ''}">${h}</div></main>`;
-}
-function escolherEnt(id) { S.ag = {ent:id, nome:S.ag.nome, tel:S.ag.tel, motivo:S.ag.motivo, lgpd:S.ag.lgpd}; render(); }
 function ticket(c, novo) {
   const e = DB.get('entidades', c.entidadeId) || {nome:'Entidade'}, k = cfg(), st = ST_CONS[c.status] || ['', 'cinza'];
   const aberta = (c.status === 'agendada' || c.status === 'confirmada') && c.data >= hoje();
@@ -1134,47 +1001,6 @@ function vConfirmar() {
     : `<h2>Você vai comparecer?</h2><div class="item-a"><button class="btn" onclick="respConfirmar('confirmada')">Confirmo minha presença</button><button class="btn perigo" onclick="respConfirmar('cancelada')">Não poderei ir</button></div>`)
     : `<h2>${c.status === 'cancelada' ? 'Consulta cancelada' : 'Este agendamento já passou'}</h2>${sair}`}</section></div></main>`;
 }
-async function respConfirmar(s) {
-  if (s === 'cancelada' && !confirm('Desmarcar a consulta? O horário fica livre para outra pessoa.')) return;
-  try { await DB.update('consultas', S.confirmar, s === 'confirmada' ? {status:'confirmada', confirmadoPor:'consulente', confirmadoEm:new Date().toISOString()} : {status:'cancelada', canceladoPor:'consulente'}); toast(s === 'confirmada' ? 'Presença confirmada. Axé!' : 'Consulta desmarcada.'); }
-  catch (e) { console.error(e); toast('Não foi possível registrar. Verifique a internet.'); }
-}
-async function agendar(ev) {
-  ev.preventDefault();
-  const A = S.ag, tel = normTel(A.tel);
-  if (!(A.nome || '').trim()) { toast('Informe seu nome.'); return false; }
-  if (tel.length < 10) { toast('Informe o celular com DDD, ex.: (45) 99999-9999.'); return false; }
-  if (!A.lgpd) { toast('Marque a autorização para continuar.'); return false; }
-  if (DB.all('consultas').some(c => normTel(c.tel) === tel && c.data === A.data && c.status !== 'cancelada')) { toast('Este celular já tem uma consulta marcada neste dia. Veja em "Já agendou?", no fim da página.'); return false; }
-  const id = `${A.ent}_${A.data}_${A.hora.replace(':','')}`;
-  const protocolo = `VC${A.data.slice(2).replace(/-/g,'')}-${A.hora.replace(':','')}${rnd(2)}`;
-  const btn = ev.target.querySelector('button.btn'); btn.disabled = true;
-  try {
-    const ok = await DB.reserve('consultas', id, {entidadeId:A.ent, data:A.data, hora:A.hora, nome:A.nome.trim(), tel, motivo:(A.motivo || '').trim(), protocolo, lgpd:true, valor:Number((DB.get('entidades', A.ent) || {}).valor) || 0, status:'agendada', criadoEm:new Date().toISOString()});
-    if (!ok) { toast('Esse horário acabou de ser ocupado. Escolha outro.'); S.ag.hora = null; render(); return false; }
-    try { localStorage.setItem('cv_meu_tel', tel); } catch (e) {}
-    S.minhasTel = tel; S.consultaFeita = id; S.ag = {}; render(); scrollTo(0,0);
-  } catch (e) { console.error(e); toast('Não foi possível agendar. Verifique a internet e tente de novo.'); btn.disabled = false; }
-  return false;
-}
-function buscarMinhas(e) {
-  e.preventDefault();
-  const t = normTel(new FormData(e.target).get('t'));
-  if (t.length < 10) { toast('Informe o celular com DDD.'); return false; }
-  S.minhasTel = t; try { localStorage.setItem('cv_meu_tel', t); } catch (x) {}
-  render(); return false;
-}
-function minhas() {
-  const t = normTel(S.minhasTel);
-  const l = DB.all('consultas').filter(c => normTel(c.tel) === t).sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora)).slice(0, 10);
-  return l.length ? l.map(c => rowConsulta(c,'cons')).join('') : '<p class="vazio">Nenhuma consulta encontrada para esse celular.</p>';
-}
-async function desmarcar(id) {
-  if (!confirm('Desmarcar esta consulta? O horário fica livre para outra pessoa.')) return;
-  await DB.update('consultas', id, {status:'cancelada', canceladoPor:'consulente'});
-  toast('Consulta desmarcada.');
-}
-
 /* --- lembretes --- */
 function dtCal(data, hora, add = 0) { const [y,m,d] = data.split('-').map(Number), [h,mi] = hora.split(':').map(Number); const x = new Date(y, m-1, d, h, mi + add); return `${x.getFullYear()}${p2(x.getMonth()+1)}${p2(x.getDate())}T${p2(x.getHours())}${p2(x.getMinutes())}00`; }
 const icsTxt = s => String(s || '').replace(/\\/g,'\\\\').replace(/\r?\n/g,'\\n').replace(/[,;]/g, m => '\\' + m);
@@ -1306,6 +1132,7 @@ function fechamento() {
   const entradas = todos.filter(x => x.status === 'pago' && (x.pagoEm || '').startsWith(comp));
   const consPagas = DB.all('consultas').filter(x => x.pagamento === 'pago' && (x.pagoEm || '').startsWith(comp));
   const totCons = consPagas.reduce((a, x) => a + Number(x.valor || 0), 0);
+  const contribs = DB.all('contribuicoes').filter(x => x.status === 'confirmado' && (x.pagoEm || '').startsWith(comp)), totContrib = sum(contribs);
   const bloco = k => {
     const l = doMes.filter(x => contaDe(x) === k).sort((a, b) => nomeF(a).localeCompare(nomeF(b))), ent = entradas.filter(x => contaDe(x) === k);
     return `<h2>${esc(contaNome(k))}</h2><table class="rel-res"><tr><td>Lançado no mês</td><td>${brl(sum(l))}</td></tr><tr><td>Pago</td><td>${brl(sum(l.filter(x => x.status === 'pago')))}</td></tr><tr><td>Em aberto</td><td>${brl(sum(l.filter(x => x.status !== 'pago')))}</td></tr><tr><td>Recebido no mês (inclui meses anteriores)</td><td>${brl(sum(ent))}${formasTxt(ent)}</td></tr></table>
@@ -1315,8 +1142,9 @@ function fechamento() {
   imprimir(`<div class="rel"><header class="rel-cab"><img src="${LOGO}" alt=""><div><b>${esc(c.casa)}</b><span>Fechamento de ${compLabel(comp)}</span><small>Emitido em ${new Date().toLocaleDateString('pt-BR')} às ${new Date().toLocaleTimeString('pt-BR', {hour:'2-digit', minute:'2-digit'})}</small></div></header>
     ${bloco('mensalidade')}${bloco('loja')}
     <h2>Consultas</h2><table class="rel-res"><tr><td>Consultas pagas no mês</td><td>${consPagas.length}, ${brl(totCons)}${formasTxt(consPagas.map(x => ({valor:x.valor, forma:x.forma})))}</td></tr></table>
+    <h2>Contribuições</h2><table class="rel-res"><tr><td>Contribuições confirmadas no mês</td><td>${contribs.length}, ${brl(totContrib)}</td></tr></table>
     <h2>Atrasados até hoje</h2>${atrasados.length ? `<table><thead><tr><th>Filho</th><th>Conta</th><th>Descrição</th><th>Valor</th><th>Venceu em</th></tr></thead><tbody>${atrasados.map(x => `<tr><td>${esc(nomeF(x))}</td><td>${esc(contaNome(contaDe(x)))}</td><td>${esc(descCob(x))}</td><td>${brl(x.valor)}</td><td>${fmtCurta(x.venc)}</td></tr>`).join('')}</tbody></table><p class="rel-total">Total atrasado: <b>${brl(sum(atrasados))}</b></p>` : '<p>Nenhuma cobrança atrasada.</p>'}
-    <p class="rel-total">Total recebido em ${compLabel(comp)}: <b>${brl(sum(entradas) + totCons)}</b></p></div>`, `Fechamento ${comp}`);
+    <p class="rel-total">Total recebido em ${compLabel(comp)}: <b>${brl(sum(entradas) + totCons + totContrib)}</b></p></div>`, `Fechamento ${comp}`);
 }
 function cobrarAtrasados() {
   const k = S.fin.conta;
@@ -1344,7 +1172,7 @@ function mPainel() {
     <div><b>${gs.length + consPg.length}</b><span>comprovante(s) para conferir</span></div>
     <div><b>${consHoje.length}</b><span>consulta(s) hoje</span></div>
   </section>
-  ${gs.length ? `<section class="sec destaque"><h2>Comprovantes para conferir</h2><p class="sub">Confira no extrato e dê baixa.</p>${gs.map(rowGrupo).join('')}</section>` : ''}
+  ${painelExtras()}${gs.length ? `<section class="sec destaque"><h2>Comprovantes para conferir</h2><p class="sub">Confira no extrato e dê baixa.</p>${gs.map(rowGrupo).join('')}</section>` : ''}
   ${consPg.length ? `<section class="sec destaque"><h2>Consultas pagas antecipado</h2>${consPg.map(c => rowConsulta(c, 'mae')).join('')}</section>` : ''}
   ${aniv.length ? `<section class="sec"><h2>Aniversariantes de ${MESES_L[+mesAtual - 1].toLowerCase()}</h2>${aniv.map(f => `<div class="item"><div class="item-p"><b>${esc(f.nome)}</b><span class="meta">Dia ${+f.nascimento.slice(8)}</span></div>${f.tel ? `<a class="btn-ico" target="_blank" rel="noopener" href="${wa(f.tel, `Axé, ${primeiro(f.nome)}! A ${cfg().casa} deseja um feliz aniversário, com muita luz, saúde e proteção. Salve!`)}">Mandar parabéns</a>` : ''}</div>`).join('')}</section>` : ''}
   <section class="sec"><h2>Próximos na agenda da casa</h2>${prox.length ? prox.map(a => rowAviso(a, 'mae')).join('') : `<p class="vazio">Nada marcado.</p><button class="btn sec2" onclick="goTab('agenda')">Marcar gira, trabalho ou reunião</button>`}</section>
@@ -1478,33 +1306,6 @@ function mFilhos() {
     <div class="item-a"><button class="btn-ico" onclick="fichaFilho('${f.id}')">Ficha</button><button class="btn-ico" onclick="calendarioFilho('${f.id}')">Calendário</button><a class="btn-ico" target="_blank" rel="noopener" href="${wa(f.tel, `Axé, ${primeiro(f.nome)}! Este é o portal dos filhos da ${cfg().casa}: ${linkPortal('filho')}\nEntre com o seu número de telefone.`)}">Enviar acesso</a><button class="btn-ico" onclick="formFilho('${f.id}')">Editar</button></div></div>`;
   }).join('') : '<p class="vazio">Nenhum filho cadastrado ainda. Comece por "Cadastrar filho".</p>'}</section>`;
 }
-function formFilho(id) {
-  const f = id ? DB.get('filhos', id) : {ativo:true};
-  modal(id ? 'Editar ficha do filho' : 'Cadastrar filho', `
-    <label>Nome completo<input name="nome" required value="${esc(f.nome)}"></label>
-    <div class="grade"><label>Celular (WhatsApp)<input name="tel" required inputmode="tel" placeholder="(45) 99999-9999" value="${esc(fmtTel(f.tel))}"></label>
-    <label>Nascimento<input type="date" name="nascimento" value="${esc(f.nascimento || '')}"></label>
-    <label>Na casa desde<input type="date" name="entrada" value="${esc(f.entrada || '')}"></label></div>
-    <span class="rot">Mensalidade</span>
-    <div class="grade"><label>Valor próprio (R$)<input name="valor" inputmode="decimal" placeholder="Usa o padrão" value="${f.valor ? fmtNum(f.valor) : ''}"></label>
-    <label>Desconto (%)<input name="desconto" inputmode="decimal" placeholder="0" value="${f.desconto || ''}"></label></div>
-    <label class="chk"><input type="checkbox" name="isento" ${f.isento ? 'checked' : ''}><span>Isento de mensalidade (a casa ajuda)</span></label>
-    <span class="rot">Ficha espiritual</span>
-    <label>Orixás e guias de frente<input name="orixas" value="${esc(f.orixas)}"></label>
-    <label>Obrigações e feituras<textarea name="obrigacoes" rows="2">${esc(f.obrigacoes)}</textarea></label>
-    <label>Guias recebidas<textarea name="guias" rows="2">${esc(f.guias)}</textarea></label>
-    <label>Observações<textarea name="obs" rows="2">${esc(f.obs)}</textarea></label>
-    <label class="chk"><input type="checkbox" name="ativo" ${f.ativo !== false ? 'checked' : ''}> Ativo na casa</label>`,
-  async d => {
-    const tel = normTel(d.tel);
-    if (tel.length < 10) { toast('Informe o celular com DDD, ex.: (45) 99999-9999.'); return false; }
-    if (DB.all('filhos').some(x => x.id !== id && normTel(x.tel) === tel)) { toast('Já existe um filho com esse celular.'); return false; }
-    const desc = Math.min(100, Math.max(0, num(d.desconto)));
-    await DB.set('filhos', id, {nome:d.nome.trim(), tel, nascimento:d.nascimento || '', entrada:d.entrada || '', valor:d.valor ? num(d.valor) : null, desconto:desc, isento:!!d.isento,
-      orixas:(d.orixas || '').trim(), obrigacoes:d.obrigacoes || '', guias:d.guias || '', obs:d.obs || '', ativo:!!d.ativo, criadoEm:f.criadoEm || new Date().toISOString()});
-    toast(id ? 'Ficha atualizada.' : 'Filho cadastrado.');
-  }, id ? `<button type="button" class="btn perigo" onclick="excluir('filhos','${id}','Excluir este cadastro? As cobranças dele continuam no histórico.')">Excluir</button>` : '', 'Salvar', true);
-}
 function frequencia(fid) {
   const f = DB.get('filhos', fid) || {};
   const l = DB.all('avisos').filter(a => a.frequencia && a.data && a.data <= hoje() && a.data >= (f.entrada || '')).sort(ordAviso).reverse();
@@ -1514,7 +1315,7 @@ function frequencia(fid) {
 function fichaFilho(id) {
   const f = DB.get('filhos', id), fr = frequencia(id);
   const campo = (r, v) => v ? `<dt>${r}</dt><dd>${esc(v).replace(/\n/g, '<br>')}</dd>` : '';
-  modal(esc(f.nome), `<dl class="ficha">${campo('Celular', fmtTel(f.tel))}${campo('Nascimento', f.nascimento ? fmtCurta(f.nascimento) : '')}${campo('Na casa desde', f.entrada ? fmtCurta(f.entrada) : '')}
+  modal(esc(f.nome), `<dl class="ficha">${campo('Celular', fmtTel(f.tel))}${campo('Endereço', f.endereco)}${campo('Nascimento', f.nascimento ? fmtCurta(f.nascimento) : '')}${campo('Na casa desde', f.entrada ? fmtCurta(f.entrada) : '')}
     ${campo('Orixás e guias de frente', f.orixas)}${campo('Obrigações e feituras', f.obrigacoes)}${campo('Guias recebidas', f.guias)}
     ${campo('Mensalidade', f.isento ? 'Isento' : brl(valorMensal(f)) + (f.desconto ? ` (desconto de ${f.desconto}%)` : ''))}${campo('Frequência', fr.total ? `${fr.pres} de ${fr.total} (${fr.pct}%)` : '')}${campo('Observações', f.obs)}</dl>
     ${resumoFilho(id, new Date().getFullYear())}`, null, `<button type="button" class="btn sec2" onclick="formFilho('${id}')">Editar ficha</button>`, 'Salvar', true);
@@ -1535,7 +1336,7 @@ function rowAviso(a, modo) {
   }
   const dt = a.data ? pd(a.data) : null;
   return `<article class="aviso" style="--tipo:${t.c}"><div class="aviso-data">${dt ? `<b>${dt.getDate()}</b><span>${MESES[dt.getMonth()].toLowerCase()}</span>` : '<span>Geral</span>'}</div>
-  <div class="aviso-c"><span class="tipo">${t.n}${a.convoca ? ', presença pedida' : ''}</span><h3>${esc(a.titulo)}</h3>${dt ? `<span class="meta">${cap(fmtData(a.data))}${a.hora ? ' às ' + a.hora : ''}</span>` : ''}${a.texto ? `<p>${esc(a.texto).replace(/\n/g, '<br>')}</p>` : ''}${acoes ? `<div class="item-a">${acoes}</div>` : ''}</div></article>`;
+  <div class="aviso-c"><span class="tipo">${t.n}${a.convoca ? ', presença pedida' : ''}${a.publico ? ', aberta ao público' : ''}</span><h3>${esc(a.titulo)}</h3>${dt ? `<span class="meta">${cap(fmtData(a.data))}${a.hora ? ' às ' + a.hora : ''}</span>` : ''}${a.texto ? `<p>${esc(a.texto).replace(/\n/g, '<br>')}</p>` : ''}${acoes ? `<div class="item-a">${acoes}</div>` : ''}</div></article>`;
 }
 function listaPresenca(id) {
   const a = DB.get('avisos', id), fs = DB.all('filhos').filter(f => f.ativo !== false).sort(byNome), pres = a.presentes || [], conf = a.presencas || {};
@@ -1588,6 +1389,10 @@ function vFilho() {
     corpo = `<section class="sec"><div class="cal-cab"><h2>Meu calendário</h2><div class="ano-nav"><button class="btn-ico" onclick="S.fano--;render()" aria-label="Ano anterior">‹</button><b>${ano}</b><button class="btn-ico" onclick="S.fano++;render()" aria-label="Próximo ano">›</button></div></div>${resumoFilho(f.id, ano)}${calFilhoHTML(f.id, ano)}</section>
     <section class="sec"><h2 style="color:var(--anil)">Mensalidades</h2>${hist('mensalidade')}</section>
     <section class="sec"><h2 style="color:var(--padilha)">Loja ${esc(cfg().nomeLoja)}</h2>${hist('loja')}</section>`;
+  } else if (t === 'pedidos') {
+    corpo = abaPedidosFilho(f);
+  } else if (t === 'dados') {
+    corpo = abaDadosFilho(f);
   } else if (t === 'mural') {
     corpo = `<section class="sec"><h2>Mural da casa</h2><div class="mural">${mural.length ? mural.map(p => post(p)).join('') : '<p class="vazio">Nenhum recado por enquanto.</p>'}</div></section>`;
   } else {
@@ -1609,57 +1414,12 @@ function cobFilho(c) {
 const linkAvaliar = id => { const u = new URL(linkPortal('consulta')); u.searchParams.set('avaliar', id); return u.href; };
 const msgAvaliacao = (c, e) => `Axé, ${primeiro(c.nome)}! Obrigada por vir à consulta com ${e.nome} na ${cfg().casa}. Pode avaliar o seu atendimento? Leva menos de um minuto: ${linkAvaliar(c.id)}`;
 const msgVaga = (w, e) => `Axé, ${primeiro(w.nome)}! Abriu um horário com ${e.nome} em ${fmtData(w.data)}. Para garantir a sua consulta, agende aqui: ${linkPortal('consulta')}`;
-function rowConsulta(c, modo) {
-  const e = DB.get('entidades', c.entidadeId) || {nome:'Entidade'}, st = ST_CONS[c.status] || ['', 'cinza'];
-  const aberta = c.status === 'agendada' || c.status === 'confirmada';
-  const pg = c.valor && c.status !== 'cancelada' ? (c.pagamento === 'pago' ? `<span class="tag verde">Consulta ${brl(c.valor)} paga${c.forma ? ', ' + FORMAS[c.forma] : ''}</span>` : c.pagamento === 'informado' ? '<span class="tag azul">Comprovante do pagamento enviado</span>' : `<span class="tag amarelo">Consulta ${brl(c.valor)} a pagar</span>`) : '';
-  let a = '';
-  if (modo === 'mae') {
-    if (c.comprovanteId) a += `<button class="btn-ico" onclick="verComprovante('${c.comprovanteId}')">Ver comprovante</button>`;
-    if (c.valor && c.pagamento !== 'pago' && c.status !== 'cancelada') a += `<button class="btn-ico ok" onclick="pagarConsultaMae('${c.id}')">${c.pagamento === 'informado' ? 'Confirmar pagamento' : 'Registrar pagamento'}</button>`;
-    if (aberta) a += `${c.status === 'agendada' ? `<button class="btn-ico ok" onclick="statusCons('${c.id}','confirmada')">Confirmar</button>` : ''}<a class="btn-ico" target="_blank" rel="noopener" href="${wa(c.tel, msgConfirmacao(c, e))}">Pedir confirmação no WhatsApp</a><button class="btn-ico" onclick="statusCons('${c.id}','compareceu')">Compareceu</button><button class="btn-ico" onclick="statusCons('${c.id}','faltou')">Faltou</button><button class="btn-ico perigo" onclick="statusCons('${c.id}','cancelada')">Cancelar</button>`;
-    if ((c.status === 'compareceu' || c.status === 'realizada') && !c.avaliacao) a += `<a class="btn-ico" target="_blank" rel="noopener" href="${wa(c.tel, msgAvaliacao(c, e))}">Pedir avaliação</a>`;
-  } else if (modo === 'cons' && aberta && c.data >= hoje()) a = `<button class="btn-ico" onclick="lembreteModal('${c.id}')">Salvar lembrete</button><button class="btn-ico perigo" onclick="desmarcar('${c.id}')">Desmarcar</button>`;
-  const av = modo === 'mae' && c.avaliacao ? `<span class="meta">Avaliação: <b>${c.avaliacao.nota}/10</b>${c.avaliacao.comentario ? `, “${esc(c.avaliacao.comentario)}”` : ''}</span>` : '';
-  return `<div class="item"><div class="item-p"><b>${modo === 'mae' ? `${c.hora}, ${esc(c.nome)}` : esc(e.nome)}</b>${modo === 'mae' ? `<span class="meta"><span class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</span>, ${fmtTel(c.tel)}${c.data !== S.cm.dia ? ', ' + fmtCurta(c.data) : ''}</span>${c.motivo ? `<span class="meta">Motivo: ${esc(c.motivo)}</span>` : ''}` : `<span class="meta">${cap(fmtData(c.data))} às ${c.hora}</span>`}${c.protocolo ? `<span class="meta">Protocolo ${esc(c.protocolo)}</span>` : ''}${av}<span class="tag ${st[1]}">${st[0]}${c.status === 'confirmada' && c.confirmadoPor === 'consulente' ? ' pelo consulente' : ''}</span>${pg}</div>${a ? `<div class="item-a">${a}</div>` : ''}</div>`;
-}
 function pagarConsultaMae(id) {
   const c = DB.get('consultas', id);
   modal('Pagamento da consulta', `<p class="sub">${esc(c.nome)}, ${brl(c.valor)}</p><div class="grade"><label>Forma de pagamento${selForma('pix')}</label><label>Data<input type="date" name="data" required value="${hoje()}"></label></div>`,
   async d => { await DB.update('consultas', id, {pagamento:'pago', forma:d.forma, pagoEm:d.data}); toast('Pagamento da consulta registrado.'); }, '', 'Registrar pagamento');
 }
 async function marcarAvisado(id) { try { await DB.update('espera', id, {status:'avisado', avisadoEm:new Date().toISOString()}); } catch (e) { console.error(e); } }
-async function statusCons(id, s) {
-  if (s === 'cancelada' && !confirm('Cancelar esta consulta? O horário fica livre de novo.')) return;
-  await DB.update('consultas', id, {status:s});
-  const c = DB.get('consultas', id), e = DB.get('entidades', c.entidadeId) || {nome:'a entidade'};
-  if (s === 'cancelada') {
-    const fila = DB.all('espera').filter(w => w.entidadeId === c.entidadeId && w.data === c.data && w.status !== 'avisado').sort((a, b) => (a.criadoEm || '').localeCompare(b.criadoEm || ''));
-    modal('Consulta cancelada', `<p>Avise ${esc(primeiro(c.nome))} que a consulta foi cancelada.</p><a class="btn" target="_blank" rel="noopener" href="${wa(c.tel, `Axé, ${primeiro(c.nome)}. Precisamos cancelar sua consulta com ${e.nome} de ${fmtData(c.data)} às ${c.hora}. Você pode marcar outro horário aqui: ${linkPortal('consulta')}`)}">Avisar no WhatsApp</a>
-      ${fila.length ? `<p class="restante" style="margin-top:16px">Há ${fila.length} pessoa(s) na fila de espera deste dia. A primeira é <b>${esc(fila[0].nome)}</b>.</p><a class="btn sec2" target="_blank" rel="noopener" href="${wa(fila[0].tel, msgVaga(fila[0], e))}" onclick="marcarAvisado('${fila[0].id}')">Avisar ${esc(primeiro(fila[0].nome))} que abriu vaga</a>` : ''}`, null);
-  } else if (s === 'compareceu') {
-    modal('Presença registrada', `<p>${esc(c.nome)} compareceu à consulta com ${esc(e.nome)}.</p><div class="item-a"><a class="btn" target="_blank" rel="noopener" href="${wa(c.tel, msgAvaliacao(c, e))}">Pedir avaliação no WhatsApp</a>${c.valor && c.pagamento !== 'pago' ? `<button type="button" class="btn sec2" onclick="pagarConsultaMae('${c.id}')">Registrar pagamento</button>` : ''}</div>`, null);
-  } else toast({confirmada:'Consulta confirmada.', faltou:'Falta registrada.'}[s]);
-}
-function mCons() {
-  const cm = S.cm, [y, m] = cm.mes.split('-').map(Number), bl = new Set(cfg().bloqueios || []);
-  const cons = DB.all('consultas').filter(c => c.data.startsWith(cm.mes) && c.status !== 'cancelada');
-  const espera = DB.all('espera');
-  const grade = gradeMes(cm.mes, (ds, d) => { const n = cons.filter(c => c.data === ds).length; return `<button class="dia ${ds === cm.dia ? 'sel' : ''} ${ds === hoje() ? 'hoje' : ''} ${bl.has(ds) ? 'bloq' : ''}" onclick="S.cm.dia='${ds}';render()" aria-label="${fmtData(ds)}, ${n} consulta(s)"><span>${d}</span>${n ? `<i>${n}</i>` : ''}</button>`; });
-  const lista = DB.all('consultas').filter(c => c.data === cm.dia).sort(byHora);
-  const fila = espera.filter(w => w.data === cm.dia).sort((a, b) => (a.criadoEm || '').localeCompare(b.criadoEm || ''));
-  const ents = DB.all('entidades').sort(byNome);
-  const avs = DB.all('consultas').filter(c => c.avaliacao).sort((a, b) => (b.avaliacao.em || '').localeCompare(a.avaliacao.em || ''));
-  return `<div class="acoes"><button class="btn sec2" onclick="copiar(linkPortal('consulta'),'Link de agendamento copiado.')">Copiar link de agendamento</button></div>
-  <section class="sec"><div class="cal-cab"><h2>${MESES_L[m-1]} de ${y}</h2><div class="ano-nav"><button class="btn-ico" onclick="mudaMesCons(-1)" aria-label="Mês anterior">‹</button><button class="btn-ico" onclick="S.cm={mes:hoje().slice(0,7),dia:hoje()};render()">Hoje</button><button class="btn-ico" onclick="mudaMesCons(1)" aria-label="Próximo mês">›</button></div></div>${grade}</section>
-  <section class="sec"><div class="cal-cab"><h2>${cap(fmtData(cm.dia))}</h2><button class="btn-ico ${bl.has(cm.dia) ? 'ok' : 'perigo'}" onclick="bloquear('${cm.dia}')">${bl.has(cm.dia) ? 'Reabrir o dia' : 'Fechar o dia'}</button></div>
-  ${bl.has(cm.dia) ? '<p class="faixa">Dia fechado: os consulentes não conseguem agendar.</p>' : ''}${lista.length ? lista.map(c => rowConsulta(c, 'mae')).join('') : '<p class="vazio">Nenhuma consulta neste dia.</p>'}
-  ${fila.length ? `<h2>Fila de espera (${fila.length})</h2>${fila.map(w => { const e = DB.get('entidades', w.entidadeId) || {nome:''}; return `<div class="item"><div class="item-p"><b>${esc(w.nome)}</b><span class="meta">${esc(e.nome)}, ${fmtTel(w.tel)}</span><span class="tag ${w.status === 'avisado' ? 'azul' : 'amarelo'}">${w.status === 'avisado' ? 'Avisado de vaga' : 'Aguardando vaga'}</span></div><div class="item-a"><a class="btn-ico" target="_blank" rel="noopener" href="${wa(w.tel, msgVaga(w, e))}" onclick="marcarAvisado('${w.id}')">Avisar que abriu vaga</a><button class="btn-ico perigo" onclick="excluir('espera','${w.id}','Tirar da fila de espera?')">Tirar da fila</button></div></div>`; }).join('')}` : ''}</section>
-  ${avs.length ? `<section class="sec"><h2>Avaliações dos consulentes</h2><p class="sub">Média ${(avs.reduce((s, c) => s + c.avaliacao.nota, 0) / avs.length).toFixed(1).replace('.', ',')} de 10, em ${avs.length} avaliação(ões).</p>${avs.slice(0, 6).map(c => { const e = DB.get('entidades', c.entidadeId) || {nome:''}; return `<div class="item"><div class="item-p"><b>${c.avaliacao.nota}/10, ${esc(c.nome)}</b><span class="meta">${esc(e.nome)}, ${fmtCurta(c.data)}</span>${c.avaliacao.comentario ? `<span>“${esc(c.avaliacao.comentario)}”</span>` : ''}</div></div>`; }).join('')}</section>` : ''}
-  <section class="sec"><h2>Entidades que atendem</h2>${ents.map(e => `<div class="item"><div class="item-p"><b class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</b>${e.linha ? `<span class="meta">${esc(e.linha)}</span>` : ''}<span class="meta">${(e.dias || []).map(d => DIAS[d]).join(', ') || 'Sem dias definidos'}, das ${e.ini} às ${e.fim}, a cada ${e.int} min${e.valor ? `, consulta ${brl(e.valor)}` : ''}</span>${e.ativa === false ? '<span class="tag cinza">Agenda fechada</span>' : ''}</div><div class="item-a"><button class="btn-ico" onclick="formEntidade('${e.id}')">Editar</button></div></div>`).join('')}
-  <button class="btn sec2" style="margin-top:8px" onclick="formEntidade()">Adicionar entidade</button></section>`;
-}
-
 /* --- consulente --- */
 function filaForm() {
   if (S.filaOk === S.ag.ent + S.ag.data) return '<p class="faixa">Você entrou na fila de espera deste dia. Se abrir um horário, a casa avisa pelo WhatsApp.</p>';
@@ -1833,6 +1593,652 @@ function formLink(id) {
   camposLink(l.tipo);
 }
 function camposLink(t) { document.querySelectorAll('#mf .cl').forEach(e => e.hidden = !e.classList.contains('cl-' + t)); }
+
+/* ============================================================
+   BANCO DE DADOS COM PRIVACIDADE
+   Mãe: lê tudo (login por e-mail). Filhos e consulentes: login
+   anônimo do Firebase, cada um lê só o que é dele.
+   ============================================================ */
+const COLS_TODAS = ['filhos','cobrancas','avisos','entidades','consultas','config','produtos','mural','espera','links','ocupacao','pedidos','rezas','solicitacoes','contribuicoes','anotacoes','acessos','vinculos','diarios','faltas'];
+const COLS_MAE = COLS_TODAS.filter(c => !['acessos','vinculos','diarios','faltas'].includes(c));
+const DB = {
+  cache:{}, fontes:{}, subs:{}, mode:'local', fs:null, erro:false, erroAuth:false, uid:null,
+  async init() {
+    COLS_TODAS.forEach(c => { this.cache[c] = {}; this.fontes[c] = {}; });
+    if (FIREBASE_CONFIG && window.firebase && firebase.auth) {
+      try {
+        firebase.initializeApp(FIREBASE_CONFIG);
+        this.fs = firebase.firestore(); this.mode = 'firebase';
+        if (APP) try { await this.fs.enablePersistence({synchronizeTabs:true}); } catch (e) { console.warn('Sem cache offline:', e.code); }
+        await iniciarFirebase();
+        return;
+      } catch (e) { console.error('Firebase indisponível.', e); this.mode = 'local'; }
+    }
+    this.erro = true;
+    S.mae = sessionStorage.getItem('cv_mae') === '1';
+    try { const raw = localStorage.getItem('cvca_db'); if (raw) { const d = JSON.parse(raw); COLS_TODAS.forEach(c => this.cache[c] = d[c] || {}); } } catch (e) {}
+  },
+  /* escuta uma consulta ou um documento; várias escutas da mesma coleção se somam */
+  ouvir(col, chave, ref) {
+    const k = col + ':' + chave;
+    if (this.subs[k]) { this.subs[k](); delete this.subs[k]; }
+    return new Promise(res => {
+      let primeira = true;
+      this.subs[k] = ref.onSnapshot(snap => {
+        const m = {};
+        if (snap.docs) snap.forEach(d => m[d.id] = {id:d.id, ...d.data()});
+        else if (snap.exists) m[snap.id] = {id:snap.id, ...snap.data()};
+        this.fontes[col][chave] = m;
+        this.cache[col] = Object.assign({}, ...Object.values(this.fontes[col]));
+        if (primeira) { primeira = false; res(); } else this.emit();
+      }, err => { console.error(k, err); this.erro = true; if (primeira) { primeira = false; res(); } else this.emit(); });
+    });
+  },
+  parar(chave) {
+    Object.keys(this.subs).filter(k => k.endsWith(':' + chave)).forEach(k => {
+      this.subs[k](); delete this.subs[k];
+      const col = k.split(':')[0]; delete this.fontes[col][chave];
+      this.cache[col] = Object.assign({}, ...Object.values(this.fontes[col]));
+    });
+  },
+  all(c) { return Object.values(this.cache[c] || {}); },
+  get(c, id) { return (this.cache[c] || {})[id]; },
+  async ler(c, id) {
+    if (this.mode === 'firebase') { const s = await this.fs.collection(c).doc(id).get(); return s.exists ? {id, ...s.data()} : null; }
+    return this.get(c, id) || null;
+  },
+  async set(c, id, data) {
+    id = id || uid(); const doc = {...data}; delete doc.id;
+    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).set(doc);
+    this.cache[c] = this.cache[c] || {}; this.cache[c][id] = {id, ...doc}; this.persist(); this.emit(); return id;
+  },
+  async update(c, id, patch) {
+    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).set(patch, {merge:true});
+    this.cache[c] = this.cache[c] || {}; this.cache[c][id] = {...this.cache[c][id], ...patch}; this.persist(); this.emit();
+  },
+  async del(c, id) {
+    if (this.mode === 'firebase') await this.fs.collection(c).doc(id).delete();
+    if (this.cache[c]) delete this.cache[c][id]; this.persist(); this.emit();
+  },
+  /* reserva o horário, a consulta e o limite de uma consulta por celular por dia, tudo de uma vez */
+  async reservar(cid, dados, slot, diario) {
+    const ocup = {entidadeId:dados.entidadeId, data:dados.data, hora:dados.hora, ativo:true, consultaId:cid};
+    if (this.mode === 'firebase') {
+      const fs = this.fs, sRef = fs.collection('ocupacao').doc(slot), dRef = fs.collection('diarios').doc(diario), cRef = fs.collection('consultas').doc(cid);
+      const r = await fs.runTransaction(async t => {
+        const so = await t.get(sRef);
+        if (so.exists && so.data().ativo) return 'ocupado';
+        const di = await t.get(dRef);
+        if (di.exists) { const ant = await t.get(fs.collection('consultas').doc(di.data().consultaId)); if (ant.exists && ant.data().status !== 'cancelada') return 'dia'; }
+        t.set(cRef, dados); t.set(sRef, ocup); t.set(dRef, {consultaId:cid, data:dados.data});
+        return 'ok';
+      });
+      if (r !== 'ok') return r;
+    } else {
+      const so = this.get('ocupacao', slot);
+      if (so && so.ativo) return 'ocupado';
+      if (this.all('consultas').some(c => normTel(c.tel) === dados.tel && c.data === dados.data && c.status !== 'cancelada')) return 'dia';
+    }
+    this.cache.consultas[cid] = {id:cid, ...dados}; this.cache.ocupacao[slot] = {id:slot, ...ocup};
+    this.persist(); this.emit(); return 'ok';
+  },
+  async putComp(data) {
+    const id = uid();
+    if (this.mode === 'firebase') await this.fs.collection('comprovantes').doc(id).set(data);
+    else localStorage.setItem('cvca_comp_' + id, JSON.stringify(data));
+    return id;
+  },
+  async getComp(id) {
+    if (this.mode === 'firebase') { const s = await this.fs.collection('comprovantes').doc(id).get(); return s.exists ? s.data() : null; }
+    const r = localStorage.getItem('cvca_comp_' + id); return r ? JSON.parse(r) : null;
+  },
+  persist() { if (this.mode === 'local') try { localStorage.setItem('cvca_db', JSON.stringify(this.cache)); } catch (e) {} },
+  emit() { if (editando(document.activeElement)) { S.pend = true; return; } render(); }
+};
+const uidLongo = () => { const a = new Uint8Array(14); crypto.getRandomValues(a); return Date.now().toString(36) + [...a].map(b => (b % 36).toString(36)).join(''); };
+async function hashTel(t) {
+  const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode('cvc:' + normTel(t)));
+  return [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 40);
+}
+const meuUid = () => DB.uid || S.uidLocal;
+const slotId = (ent, data, hora) => `${ent}_${data}_${hora.replace(':', '')}`;
+
+async function iniciarFirebase() {
+  const fs = DB.fs, auth = firebase.auth();
+  let u = await new Promise(res => { const off = auth.onAuthStateChanged(x => { off(); res(x); }); });
+  if (PORTAL === 'mae') {
+    await DB.ouvir('config', 'pub', fs.collection('config'));
+    if (u && !u.isAnonymous) await entrarMae(u);
+    auth.onAuthStateChanged(async x => {
+      const logado = x && !x.isAnonymous;
+      if (logado && !S.mae) { await entrarMae(x); render(); }
+      else if (!logado && S.mae) { S.mae = false; S.usuario = ''; DB.parar('mae'); render(); }
+    });
+    return;
+  }
+  if (!u) {
+    try { u = (await auth.signInAnonymously()).user; }
+    catch (e) { console.error('Login anônimo:', e); DB.erro = true; DB.erroAuth = true; }
+  }
+  DB.uid = u ? u.uid : null;
+  await DB.ouvir('config', 'pub', fs.collection('config'));
+  if (PORTAL === 'filho') {
+    await Promise.all([DB.ouvir('avisos', 'pub', fs.collection('avisos')), DB.ouvir('produtos', 'pub', fs.collection('produtos'))]);
+    if (S.filhoId && u) {
+      try {
+        const v = await fs.collection('vinculos').doc(u.uid).get();
+        if (v.exists && v.data().filhoId === S.filhoId) await entrarFilho(S.filhoId);
+        else { S.filhoId = null; localStorage.removeItem('cv_filho'); }
+      } catch (e) { console.warn(e); await entrarFilho(S.filhoId); }
+    }
+  } else {
+    const espera = [
+      DB.ouvir('entidades', 'pub', fs.collection('entidades')),
+      DB.ouvir('ocupacao', 'pub', fs.collection('ocupacao').where('data', '>=', hoje())),
+      DB.ouvir('avisos', 'pub', fs.collection('avisos').where('publico', '==', true))
+    ];
+    if (u) espera.push(DB.ouvir('consultas', 'minhas', fs.collection('consultas').where('uid', '==', u.uid)));
+    const id = S.confirmar || S.avaliar;
+    if (id) espera.push(DB.ouvir('consultas', 'link', fs.collection('consultas').doc(id)));
+    await Promise.all(espera);
+  }
+}
+async function entrarMae(u) {
+  S.mae = true; S.usuario = u.email;
+  await Promise.all(COLS_MAE.map(c => DB.ouvir(c, 'mae', DB.fs.collection(c))));
+  aposLogin();
+}
+async function entrarFilho(fid) {
+  if (DB.mode !== 'firebase') return;
+  const fs = DB.fs;
+  await Promise.all([
+    DB.ouvir('filhos', 'eu', fs.collection('filhos').doc(fid)),
+    DB.ouvir('cobrancas', 'eu', fs.collection('cobrancas').where('filhoId', '==', fid)),
+    DB.ouvir('mural', 'eu', fs.collection('mural')),
+    ...['pedidos','rezas','solicitacoes'].map(c => DB.ouvir(c, 'eu', fs.collection(c).where('filhoId', '==', fid)))
+  ]);
+}
+async function aposLogin() {
+  try {
+    const c = cfg();
+    if (DB.mode === 'firebase' && !c.authCriada) await DB.update('config', 'casa', {authCriada:true});
+    if (!DB.all('entidades').length) await DB.set('entidades', null, {nome:'Vovó Chica de Aruanda', linha:'Preta Velha', dias:[3], ini:'19:00', fim:'21:00', int:20, horarios:gerarHorarios('19:00','21:00',20), ativa:true, tema:'roxo'});
+    if (!c.seedPadilha) {
+      if (!DB.all('entidades').some(ehPadilha)) await DB.set('entidades', null, {nome:'Senhorita Maria Padilha', linha:'Pombagira', dias:[5], ini:'20:00', fim:'22:00', int:20, horarios:gerarHorarios('20:00','22:00',20), ativa:true, tema:'padilha'});
+      await DB.update('config', 'casa', {seedPadilha:true});
+    }
+    /* uma vez só: prepara os dados que a versão com privacidade usa */
+    if (!c.privV1) {
+      for (const f of DB.all('filhos')) if (f.tel) await DB.set('acessos', await hashTel(f.tel), {filhoId:f.id});
+      for (const x of DB.all('consultas').filter(x => x.data >= hoje() && ['agendada','confirmada'].includes(x.status))) {
+        const sid = slotId(x.entidadeId, x.data, x.hora);
+        if (!DB.get('ocupacao', sid)) await DB.set('ocupacao', sid, {entidadeId:x.entidadeId, data:x.data, hora:x.hora, ativo:true, consultaId:x.id});
+      }
+      for (const t of new Set(DB.all('consultas').filter(x => x.status === 'faltou').map(x => normTel(x.tel)))) await atualizarFaltas(t);
+      await DB.update('config', 'casa', {privV1:true});
+    }
+  } catch (e) { console.error(e); }
+}
+async function sairMae() {
+  if (temAuth()) { await firebase.auth().signOut(); return; }
+  S.mae = false; sessionStorage.removeItem('cv_mae'); render();
+}
+async function atualizarFaltas(tel) {
+  try { const n = DB.all('consultas').filter(x => normTel(x.tel) === normTel(tel) && x.status === 'faltou').length; await DB.set('faltas', await hashTel(tel), {n}); }
+  catch (e) { console.error(e); }
+}
+async function contarFaltas(tel) {
+  if (DB.mode === 'firebase') { try { const f = await DB.ler('faltas', await hashTel(tel)); return f ? Number(f.n) || 0 : 0; } catch (e) { return 0; } }
+  return DB.all('consultas').filter(x => normTel(x.tel) === normTel(tel) && x.status === 'faltou').length;
+}
+async function liberarSlot(c) {
+  try { const sid = slotId(c.entidadeId, c.data, c.hora), o = DB.get('ocupacao', sid); if (DB.mode === 'firebase' || !o || o.consultaId === c.id) await DB.update('ocupacao', sid, {ativo:false}); }
+  catch (e) { console.warn('Liberar horário:', e); }
+}
+
+/* ============================================================
+   FILHOS: LOGIN SEM SENHA, PEDIDOS E DADOS
+   ============================================================ */
+async function loginFilho(e) {
+  e.preventDefault();
+  const t = normTel(new FormData(e.target).get('t')), btn = $('#btn-entrar');
+  if (t.length < 10) { toast('Informe o celular com DDD.'); return false; }
+  btn.disabled = true;
+  try {
+    let fid;
+    if (DB.mode === 'firebase') {
+      if (!DB.uid) throw {code:'sem-auth'};
+      const h = await hashTel(t), a = await DB.ler('acessos', h);
+      if (!a) throw {code:'nao-achou'};
+      fid = a.filhoId;
+      await DB.fs.collection('vinculos').doc(DB.uid).set({filhoId:fid, h});
+      await entrarFilho(fid);
+      const f = DB.get('filhos', fid);
+      if (!f || f.ativo === false) { await sairFilho(true); throw {code:'nao-achou'}; }
+    } else {
+      const f = DB.all('filhos').find(x => normTel(x.tel) === t && x.ativo !== false);
+      if (!f) throw {code:'nao-achou'};
+      fid = f.id;
+    }
+    S.filhoId = fid; localStorage.setItem('cv_filho', fid); S.tab = null; render();
+  } catch (err) {
+    console.error(err);
+    toast(err.code === 'nao-achou' ? 'Telefone não encontrado. Fale com a Mãe de Santo para conferir seu cadastro.' : err.code === 'sem-auth' ? 'O login anônimo ainda não está ativado no Firebase.' : 'Não foi possível entrar. Verifique a internet.');
+    if ($('#btn-entrar')) $('#btn-entrar').disabled = false;
+  }
+  return false;
+}
+async function sairFilho(silencioso) {
+  if (DB.mode === 'firebase') { DB.parar('eu'); try { if (DB.uid) await DB.fs.collection('vinculos').doc(DB.uid).delete(); } catch (e) {} }
+  S.filhoId = null; localStorage.removeItem('cv_filho');
+  if (silencioso !== true) render();
+}
+const porData = (a, b) => (b.criadoEm || '').localeCompare(a.criadoEm || '');
+const ST_PED = {pendente:['Aguardando a Mãe de Santo','amarelo'], aprovado:['Aprovado, já está na sua conta','verde'], recusado:['Não aprovado','vermelho'], aberto:['Recebido pela Mãe de Santo','amarelo'], atendido:['Atendido','verde']};
+function abaPedidosFilho(f) {
+  const c = cfg(), prods = DB.all('produtos').filter(p => p.ativo !== false).sort(byNome);
+  const meus = DB.all('pedidos').filter(p => p.filhoId === f.id).sort(porData).slice(0, 10);
+  const rz = DB.all('rezas').filter(r => r.filhoId === f.id).sort(porData).slice(0, 10);
+  S.carrinho = S.carrinho || {};
+  return `<section class="sec"><h2 style="color:var(--padilha)">Comprar na loja ${esc(c.nomeLoja)}</h2>
+    ${prods.length ? `<p class="sub">Escolha a quantidade de cada item. A Mãe de Santo aprova e o valor entra na sua conta da loja.</p>
+      <div class="lista-valores">${prods.map(p => `<div class="lv"><span>${esc(p.nome)}<br><small class="meta">${brl(p.preco)}</small></span><input class="v-filho" type="number" min="0" step="1" value="${S.carrinho[p.id] || 0}" oninput="carrinho('${p.id}',this.value)" aria-label="Quantidade de ${esc(p.nome)}"></div>`).join('')}</div>
+      <p class="total-pedido">Total do pedido: <b id="totPed">${brl(totalCarrinho())}</b></p>
+      <label>Observação (opcional)<input id="obsPed" placeholder="Ex.: pode parcelar em 2 vezes?"></label>
+      <button class="btn padilha" onclick="enviarPedido()">Enviar pedido</button>` : '<p class="vazio">A loja ainda não cadastrou produtos.</p>'}
+    ${meus.length ? `<h2>Meus pedidos</h2>${meus.map(p => `<div class="item"><div class="item-p"><b>${p.itens.map(i => `${i.qtd}x ${esc(i.nome)}`).join(', ')}</b><span class="meta">${brl(p.total)}, pedido em ${fmtCurta(p.criadoEm)}</span><span class="tag ${(ST_PED[p.status] || ['', 'cinza'])[1]}">${(ST_PED[p.status] || [p.status])[0]}</span>${p.motivo ? `<span class="meta">${esc(p.motivo)}</span>` : ''}</div></div>`).join('')}` : ''}</section>
+  <section class="sec"><h2>Pedido de reza</h2><p class="sub">Peça firmeza ou oração para você ou para alguém. A Mãe de Santo recebe o seu pedido.</p>
+    <form class="form-cons" onsubmit="return enviarReza(event)"><label>Para quem é a reza<input name="para" required placeholder="Ex.: minha mãe, Maria"></label><label>Pedido<textarea name="motivo" rows="3" required></textarea></label><button class="btn">Enviar pedido de reza</button></form>
+    ${rz.length ? `<h2>Meus pedidos de reza</h2>${rz.map(r => `<div class="item"><div class="item-p"><b>Para ${esc(r.para)}</b><span class="meta">${esc(r.motivo)}</span><span class="meta">${fmtCurta(r.criadoEm)}</span><span class="tag ${(ST_PED[r.status] || ['', 'cinza'])[1]}">${(ST_PED[r.status] || [r.status])[0]}</span></div></div>`).join('')}` : ''}</section>`;
+}
+function totalCarrinho() { return Math.round(Object.entries(S.carrinho || {}).reduce((a, [id, q]) => { const p = DB.get('produtos', id); return a + (p ? p.preco * q : 0); }, 0) * 100) / 100; }
+function carrinho(id, v) { S.carrinho[id] = Math.max(0, parseInt(v) || 0); const t = $('#totPed'); if (t) t.textContent = brl(totalCarrinho()); }
+async function enviarPedido() {
+  const f = DB.get('filhos', S.filhoId);
+  const itens = Object.entries(S.carrinho || {}).filter(([, q]) => q > 0).map(([id, q]) => { const p = DB.get('produtos', id); return p ? {produtoId:id, nome:p.nome, preco:p.preco, qtd:q} : null; }).filter(Boolean);
+  if (!itens.length) return toast('Escolha pelo menos um produto.');
+  try {
+    await DB.set('pedidos', null, {filhoId:f.id, filhoNome:f.nome, itens, total:totalCarrinho(), obs:(($('#obsPed') || {}).value || '').trim(), status:'pendente', criadoEm:new Date().toISOString()});
+    S.carrinho = {}; render(); toast('Pedido enviado. A Mãe de Santo vai aprovar.');
+  } catch (e) { console.error(e); toast('Não foi possível enviar. Verifique a internet.'); }
+}
+async function enviarReza(ev) {
+  ev.preventDefault();
+  const d = Object.fromEntries(new FormData(ev.target)), f = DB.get('filhos', S.filhoId);
+  try { await DB.set('rezas', null, {filhoId:f.id, filhoNome:f.nome, para:d.para.trim(), motivo:d.motivo.trim(), status:'aberto', criadoEm:new Date().toISOString()}); ev.target.reset(); toast('Pedido de reza enviado. Axé!'); }
+  catch (e) { console.error(e); toast('Não foi possível enviar. Verifique a internet.'); }
+  return false;
+}
+function abaDadosFilho(f) {
+  const sols = DB.all('solicitacoes').filter(x => x.filhoId === f.id).sort(porData), pend = sols.find(x => x.status === 'pendente'), ult = sols.find(x => x.status !== 'pendente');
+  const campo = (r, v) => `<dt>${r}</dt><dd>${v ? esc(v) : '<span class="meta">não informado</span>'}</dd>`;
+  return `<section class="sec"><h2>Meus dados</h2><dl class="ficha">${campo('Nome', f.nome)}${campo('Celular', fmtTel(f.tel))}${campo('Nascimento', f.nascimento ? fmtCurta(f.nascimento) : '')}${campo('Endereço', f.endereco)}${campo('Na casa desde', f.entrada ? fmtCurta(f.entrada) : '')}</dl></section>
+  <section class="sec"><h2>Pedir alteração</h2>${pend ? '<p class="faixa">Você já tem um pedido de alteração aguardando a Mãe de Santo.</p>' : `<p class="sub">A Mãe de Santo confere e aprova a mudança.</p>
+    <form class="form-cons" onsubmit="return pedirAlteracao(event)"><label>Celular<input name="tel" inputmode="tel" required value="${esc(fmtTel(f.tel))}"></label><label>Nascimento<input type="date" name="nascimento" value="${esc(f.nascimento || '')}"></label><label>Endereço<input name="endereco" value="${esc(f.endereco || '')}" autocomplete="street-address"></label><label>Observação (opcional)<input name="obs"></label><button class="btn">Enviar para aprovação</button></form>`}
+    ${ult && ult.status === 'recusado' ? `<p class="recusa">Seu último pedido de alteração não foi aprovado${ult.motivo ? ': ' + esc(ult.motivo) : ''}.</p>` : ''}</section>`;
+}
+async function pedirAlteracao(ev) {
+  ev.preventDefault();
+  const d = Object.fromEntries(new FormData(ev.target)), f = DB.get('filhos', S.filhoId), dados = {};
+  const tel = normTel(d.tel);
+  if (tel.length < 10) { toast('Informe o celular com DDD.'); return false; }
+  if (tel !== normTel(f.tel)) dados.tel = tel;
+  if ((d.nascimento || '') !== (f.nascimento || '')) dados.nascimento = d.nascimento || '';
+  if ((d.endereco || '').trim() !== (f.endereco || '')) dados.endereco = d.endereco.trim();
+  if (!Object.keys(dados).length) { toast('Nenhum dado foi alterado.'); return false; }
+  try { await DB.set('solicitacoes', null, {filhoId:f.id, filhoNome:f.nome, dados, obs:(d.obs || '').trim(), status:'pendente', criadoEm:new Date().toISOString()}); toast('Pedido enviado para a Mãe de Santo.'); }
+  catch (e) { console.error(e); toast('Não foi possível enviar. Verifique a internet.'); }
+  return false;
+}
+
+/* ============================================================
+   MÃE: PEDIDOS, CONTRIBUIÇÕES E FICHA DO FILHO
+   ============================================================ */
+function painelExtras() {
+  const np = DB.all('pedidos').filter(p => p.status === 'pendente').length, nr = DB.all('rezas').filter(r => r.status !== 'atendido').length, ns = DB.all('solicitacoes').filter(x => x.status === 'pendente').length;
+  const contrib = DB.all('contribuicoes').filter(x => x.status === 'informado').sort(porData);
+  return `${np + nr + ns ? `<section class="sec destaque"><div class="cal-cab"><h2>Pedidos dos filhos</h2><button class="btn" onclick="goTab('pedidos')">Ver pedidos</button></div><p class="sub" style="margin:0">${[np && `${np} pedido(s) à loja`, nr && `${nr} pedido(s) de reza`, ns && `${ns} alteração(ões) de cadastro`].filter(Boolean).join(', ')}.</p></section>` : ''}
+  ${contrib.length ? `<section class="sec destaque"><h2>Contribuições para conferir</h2>${contrib.map(rowContrib).join('')}</section>` : ''}`;
+}
+function rowContrib(x) {
+  return `<div class="item"><div class="item-p"><b>${brl(x.valor)}${x.nome ? ', ' + esc(x.nome) : ', sem nome'}</b><span class="meta">Avisada em ${fmtCurta(x.criadoEm)}${x.comprovanteId ? ', com comprovante' : ', sem comprovante'}</span></div>
+  <div class="item-a">${x.comprovanteId ? `<button class="btn-ico" onclick="verComprovante('${x.comprovanteId}')">Ver comprovante</button>` : ''}<button class="btn-ico ok" onclick="confirmarContrib('${x.id}')">Confirmar</button><button class="btn-ico perigo" onclick="excluir('contribuicoes','${x.id}','Excluir esta contribuição? Use quando o valor não entrou.')">Não entrou</button></div></div>`;
+}
+async function confirmarContrib(id) { await DB.update('contribuicoes', id, {status:'confirmado', pagoEm:hoje(), forma:'pix'}); toast('Contribuição confirmada.'); }
+function mPedidos() {
+  const ped = DB.all('pedidos').sort(porData), rez = DB.all('rezas').sort(porData), sol = DB.all('solicitacoes').sort(porData);
+  const pp = ped.filter(p => p.status === 'pendente'), rp = rez.filter(r => r.status !== 'atendido'), sp = sol.filter(x => x.status === 'pendente');
+  const ROT = {tel:'Celular', nascimento:'Nascimento', endereco:'Endereço'};
+  const fmtCampo = (k, v) => k === 'tel' ? fmtTel(v) : k === 'nascimento' ? (v ? fmtCurta(v) : 'vazio') : (v || 'vazio');
+  return `<section class="sec"><h2 style="color:var(--padilha)">Pedidos à loja ${esc(cfg().nomeLoja)}</h2>${pp.length ? pp.map(p => `<div class="item"><div class="item-p"><b>${esc(p.filhoNome || nomeF(p))}</b><span>${p.itens.map(i => `${i.qtd}x ${esc(i.nome)} (${brl(i.preco)})`).join(', ')}</span><span class="meta"><b>Total ${brl(p.total)}</b>, pedido em ${fmtCurta(p.criadoEm)}</span>${p.obs ? `<span class="meta">Obs.: ${esc(p.obs)}</span>` : ''}</div><div class="item-a"><button class="btn-ico ok" onclick="aprovarPedido('${p.id}')">Aprovar e lançar</button><button class="btn-ico perigo" onclick="recusarPedido('${p.id}')">Recusar</button></div></div>`).join('') : '<p class="vazio">Nenhum pedido aguardando.</p>'}
+    ${ped.length > pp.length ? `<details class="hist"><summary>Últimos pedidos resolvidos</summary>${ped.filter(p => p.status !== 'pendente').slice(0, 10).map(p => `<div class="item"><div class="item-p"><b>${esc(p.filhoNome || '')}</b><span class="meta">${brl(p.total)}, ${fmtCurta(p.criadoEm)}</span><span class="tag ${p.status === 'aprovado' ? 'verde' : 'vermelho'}">${p.status === 'aprovado' ? 'Aprovado' : 'Recusado'}</span></div></div>`).join('')}</details>` : ''}</section>
+  <section class="sec"><h2>Pedidos de reza</h2>${rp.length ? rp.map(r => { const f = DB.get('filhos', r.filhoId) || {}; return `<div class="item"><div class="item-p"><b>Para ${esc(r.para)}</b><span>${esc(r.motivo)}</span><span class="meta">Pedido de ${esc(r.filhoNome || f.nome || '')}, ${fmtCurta(r.criadoEm)}</span></div><div class="item-a"><button class="btn-ico ok" onclick="rezaAtendida('${r.id}')">Marcar como atendido</button>${f.tel ? `<a class="btn-ico" target="_blank" rel="noopener" href="${wa(f.tel, `Axé, ${primeiro(f.nome)}! Seu pedido de reza para ${r.para} foi colocado na firmeza.`)}">Avisar no WhatsApp</a>` : ''}</div></div>`; }).join('') : '<p class="vazio">Nenhum pedido de reza em aberto.</p>'}</section>
+  <section class="sec"><h2>Alterações de cadastro</h2>${sp.length ? sp.map(x => { const f = DB.get('filhos', x.filhoId) || {}; return `<div class="item"><div class="item-p"><b>${esc(x.filhoNome || f.nome || '')}</b>${Object.entries(x.dados).map(([k, v]) => `<span class="meta">${ROT[k] || k}: ${esc(fmtCampo(k, f[k]))} → <b>${esc(fmtCampo(k, v))}</b></span>`).join('')}${x.obs ? `<span class="meta">Obs.: ${esc(x.obs)}</span>` : ''}</div><div class="item-a"><button class="btn-ico ok" onclick="aprovarAlteracao('${x.id}')">Aprovar</button><button class="btn-ico perigo" onclick="recusarAlteracao('${x.id}')">Recusar</button></div></div>`; }).join('') : '<p class="vazio">Nenhuma alteração aguardando.</p>'}</section>`;
+}
+async function lancarLoja(fid, desc, v, n, venc1) {
+  const base = Math.floor(v / n * 100) / 100, [y, m, dd] = venc1.split('-').map(Number);
+  for (let i = 0; i < n; i++) {
+    const val = i === n - 1 ? Math.round((v - base * (n - 1)) * 100) / 100 : base;
+    const dt = new Date(y, m - 1 + i, 1), ult = new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
+    const vc = `${dt.getFullYear()}-${p2(dt.getMonth()+1)}-${p2(Math.min(dd, ult))}`;
+    await DB.set('cobrancas', null, {conta:'loja', filhoId:fid, competencia:vc.slice(0,7), valor:val, venc:vc, status:'pendente', tipo:'loja', descricao:n > 1 ? `${desc} (${i+1}/${n})` : desc, compraEm:hoje(), criadoEm:new Date().toISOString()});
+  }
+}
+function aprovarPedido(id) {
+  const p = DB.get('pedidos', id);
+  modal('Aprovar pedido', `<p class="sub">${esc(p.filhoNome || '')}: ${p.itens.map(i => `${i.qtd}x ${esc(i.nome)}`).join(', ')}</p>
+    <label>Descrição na conta<input name="desc" required value="${esc(p.itens.map(i => `${i.qtd}x ${i.nome}`).join(', '))}"></label>
+    <div class="grade"><label>Valor (R$)<input name="valor" inputmode="decimal" required value="${fmtNum(p.total)}"></label><label>Parcelas<select name="parc">${Array.from({length:12}, (_, i) => `<option value="${i+1}">${i+1}x</option>`).join('')}</select></label><label>1º vencimento<input type="date" name="venc" required value="${hoje()}"></label></div>`,
+  async d => {
+    const v = num(d.valor); if (!v) { toast('Informe o valor.'); return false; }
+    await lancarLoja(p.filhoId, d.desc.trim(), v, +d.parc, d.venc);
+    await DB.update('pedidos', id, {status:'aprovado', resolvidoEm:new Date().toISOString()});
+    toast('Pedido aprovado e lançado na conta da loja do filho.');
+  }, '', 'Aprovar e lançar');
+}
+async function recusarPedido(id) { const m = prompt('Por que o pedido não foi aprovado? O filho vai ver esta mensagem.', 'Produto em falta'); if (m === null) return; await DB.update('pedidos', id, {status:'recusado', motivo:m.trim(), resolvidoEm:new Date().toISOString()}); toast('Pedido recusado.'); }
+async function rezaAtendida(id) { await DB.update('rezas', id, {status:'atendido', atendidoEm:new Date().toISOString()}); toast('Pedido de reza marcado como atendido.'); }
+async function aprovarAlteracao(id) {
+  const x = DB.get('solicitacoes', id), f = DB.get('filhos', x.filhoId);
+  if (!f) return toast('Cadastro do filho não encontrado.');
+  if (x.dados.tel && DB.all('filhos').some(o => o.id !== f.id && normTel(o.tel) === normTel(x.dados.tel))) return toast('Já existe outro filho com esse celular.');
+  const telAntigo = f.tel;
+  await DB.update('filhos', f.id, x.dados);
+  if (x.dados.tel) await trocarAcesso(f.id, telAntigo, x.dados.tel);
+  await DB.update('solicitacoes', id, {status:'aprovado', resolvidoEm:new Date().toISOString()});
+  toast('Cadastro atualizado.');
+}
+async function recusarAlteracao(id) { const m = prompt('Motivo (o filho vai ver):', ''); if (m === null) return; await DB.update('solicitacoes', id, {status:'recusado', motivo:m.trim(), resolvidoEm:new Date().toISOString()}); toast('Alteração recusada.'); }
+async function trocarAcesso(fid, telAntigo, telNovo) {
+  try {
+    if (telAntigo && normTel(telAntigo) !== normTel(telNovo)) { try { await DB.del('acessos', await hashTel(telAntigo)); } catch (e) {} }
+    if (telNovo) await DB.set('acessos', await hashTel(telNovo), {filhoId:fid});
+  } catch (e) { console.error('Acesso do filho:', e); }
+}
+function formFilho(id) {
+  const f = id ? DB.get('filhos', id) : {ativo:true};
+  modal(id ? 'Editar ficha do filho' : 'Cadastrar filho', `
+    <label>Nome completo<input name="nome" required value="${esc(f.nome)}"></label>
+    <div class="grade"><label>Celular (WhatsApp)<input name="tel" required inputmode="tel" placeholder="(45) 99999-9999" value="${esc(fmtTel(f.tel))}"></label>
+    <label>Nascimento<input type="date" name="nascimento" value="${esc(f.nascimento || '')}"></label>
+    <label>Na casa desde<input type="date" name="entrada" value="${esc(f.entrada || '')}"></label></div>
+    <label>Endereço<input name="endereco" value="${esc(f.endereco || '')}"></label>
+    <span class="rot">Mensalidade</span>
+    <div class="grade"><label>Valor próprio (R$)<input name="valor" inputmode="decimal" placeholder="Usa o padrão" value="${f.valor ? fmtNum(f.valor) : ''}"></label>
+    <label>Desconto (%)<input name="desconto" inputmode="decimal" placeholder="0" value="${f.desconto || ''}"></label></div>
+    <label class="chk"><input type="checkbox" name="isento" ${f.isento ? 'checked' : ''}><span>Isento de mensalidade (a casa ajuda)</span></label>
+    <span class="rot">Ficha espiritual</span>
+    <label>Orixás e guias de frente<input name="orixas" value="${esc(f.orixas)}"></label>
+    <label>Obrigações e feituras<textarea name="obrigacoes" rows="2">${esc(f.obrigacoes)}</textarea></label>
+    <label>Guias recebidas<textarea name="guias" rows="2">${esc(f.guias)}</textarea></label>
+    <label>Observações<textarea name="obs" rows="2">${esc(f.obs)}</textarea></label>
+    <label class="chk"><input type="checkbox" name="ativo" ${f.ativo !== false ? 'checked' : ''}> Ativo na casa</label>`,
+  async d => {
+    const tel = normTel(d.tel);
+    if (tel.length < 10) { toast('Informe o celular com DDD, ex.: (45) 99999-9999.'); return false; }
+    if (DB.all('filhos').some(x => x.id !== id && normTel(x.tel) === tel)) { toast('Já existe um filho com esse celular.'); return false; }
+    const desc = Math.min(100, Math.max(0, num(d.desconto)));
+    const novoId = await DB.set('filhos', id, {nome:d.nome.trim(), tel, nascimento:d.nascimento || '', entrada:d.entrada || '', endereco:(d.endereco || '').trim(), valor:d.valor ? num(d.valor) : null, desconto:desc, isento:!!d.isento,
+      orixas:(d.orixas || '').trim(), obrigacoes:d.obrigacoes || '', guias:d.guias || '', obs:d.obs || '', ativo:!!d.ativo, criadoEm:f.criadoEm || new Date().toISOString()});
+    await trocarAcesso(novoId, f.tel, tel);
+    toast(id ? 'Ficha atualizada.' : 'Filho cadastrado.');
+  }, id ? `<button type="button" class="btn perigo" onclick="excluirFilho('${id}')">Excluir</button>` : '', 'Salvar', true);
+}
+async function excluirFilho(id) {
+  if (!confirm('Excluir este cadastro? As cobranças dele continuam no histórico.')) return;
+  const f = DB.get('filhos', id);
+  try { if (f && f.tel) await DB.del('acessos', await hashTel(f.tel)); } catch (e) {}
+  await DB.del('filhos', id); fechar(); toast('Excluído.');
+}
+function formAviso(id) {
+  const a = id ? DB.get('avisos', id) : {tipo:'gira', convoca:true};
+  modal(id ? 'Editar' : 'Novo evento ou comunicado', `
+    <label>Tipo<select name="tipo">${Object.entries(TIPOS).map(([k, t]) => `<option value="${k}" ${a.tipo === k ? 'selected' : ''}>${t.n}</option>`).join('')}</select></label>
+    <label>Título<input name="titulo" required value="${esc(a.titulo)}" placeholder="Ex.: Gira de Pretos Velhos"></label>
+    <div class="grade"><label>Data<input type="date" name="data" value="${a.data || ''}"></label><label>Horário<input type="time" name="hora" value="${a.hora || ''}"></label></div>
+    <p class="sub" style="margin-top:-6px">Comunicados gerais podem ficar sem data.</p>
+    <label>Mensagem<textarea name="texto" rows="4" placeholder="Ex.: Todos de branco. Trazer uma vela branca.">${esc(a.texto)}</textarea></label>
+    <label class="chk"><input type="checkbox" name="convoca" ${a.convoca ? 'checked' : ''}> Pedir para os filhos confirmarem presença</label>
+    <label class="chk"><input type="checkbox" name="publico" ${a.publico ? 'checked' : ''}><span>Gira aberta ao público<br><small>Aparece também na página de agendamento dos consulentes.</small></span></label>`,
+  async d => {
+    await DB.set('avisos', id, {tipo:d.tipo, titulo:d.titulo.trim(), data:d.data || '', hora:d.hora || '', texto:d.texto || '', convoca:!!d.convoca, publico:!!d.publico, presencas:a.presencas || {}, presentes:a.presentes || [], frequencia:!!a.frequencia, criadoEm:a.criadoEm || new Date().toISOString()});
+    toast(id ? 'Atualizado.' : 'Publicado no portal dos filhos.');
+  }, id ? `<button type="button" class="btn perigo" onclick="excluir('avisos','${id}','Excluir este item da agenda?')">Excluir</button>` : '', id ? 'Salvar' : 'Publicar');
+}
+
+/* ============================================================
+   CONSULTAS NA MÃE: HORÁRIOS, FICHA DO CONSULENTE E RETORNO
+   ============================================================ */
+function rowConsulta(c, modo) {
+  const e = DB.get('entidades', c.entidadeId) || {nome:'Entidade'}, st = ST_CONS[c.status] || ['', 'cinza'];
+  const aberta = c.status === 'agendada' || c.status === 'confirmada';
+  const pg = c.valor && c.status !== 'cancelada' ? (c.pagamento === 'pago' ? `<span class="tag verde">Consulta ${brl(c.valor)} paga${c.forma ? ', ' + FORMAS[c.forma] : ''}</span>` : c.pagamento === 'informado' ? '<span class="tag azul">Comprovante do pagamento enviado</span>' : `<span class="tag amarelo">Consulta ${brl(c.valor)} a pagar</span>`) : '';
+  let a = '';
+  if (modo === 'mae') {
+    a += `<button class="btn-ico" onclick="fichaConsulente('${normTel(c.tel)}')">Ficha</button>`;
+    if (c.comprovanteId) a += `<button class="btn-ico" onclick="verComprovante('${c.comprovanteId}')">Ver comprovante</button>`;
+    if (c.valor && c.pagamento !== 'pago' && c.status !== 'cancelada') a += `<button class="btn-ico ok" onclick="pagarConsultaMae('${c.id}')">${c.pagamento === 'informado' ? 'Confirmar pagamento' : 'Registrar pagamento'}</button>`;
+    if (aberta) a += `${c.status === 'agendada' ? `<button class="btn-ico ok" onclick="statusCons('${c.id}','confirmada')">Confirmar</button>` : ''}<a class="btn-ico" target="_blank" rel="noopener" href="${wa(c.tel, msgConfirmacao(c, e))}">Pedir confirmação no WhatsApp</a><button class="btn-ico" onclick="statusCons('${c.id}','compareceu')">Compareceu</button><button class="btn-ico" onclick="statusCons('${c.id}','faltou')">Faltou</button><button class="btn-ico perigo" onclick="statusCons('${c.id}','cancelada')">Cancelar</button>`;
+    if (c.status === 'compareceu' || c.status === 'realizada') a += `<button class="btn-ico" onclick="anotar('${c.id}')">${DB.get('anotacoes', c.id) ? 'Ver orientações' : 'Anotar orientações'}</button><button class="btn-ico" onclick="marcarRetorno('${c.id}')">Marcar retorno</button>${!c.avaliacao ? `<a class="btn-ico" target="_blank" rel="noopener" href="${wa(c.tel, msgAvaliacao(c, e))}">Pedir avaliação</a>` : ''}`;
+  } else if (modo === 'cons' && aberta && c.data >= hoje()) a = `<button class="btn-ico" onclick="lembreteModal('${c.id}')">Salvar lembrete</button><button class="btn-ico perigo" onclick="desmarcar('${c.id}')">Desmarcar</button>`;
+  const av = modo === 'mae' && c.avaliacao ? `<span class="meta">Avaliação: <b>${c.avaliacao.nota}/10</b>${c.avaliacao.comentario ? `, “${esc(c.avaliacao.comentario)}”` : ''}</span>` : '';
+  const extras = modo === 'mae' ? `${c.retornoDe ? '<span class="tag azul">Retorno</span>' : ''}${c.exigiuPagamento ? '<span class="tag vermelho">Pagamento exigido por faltas</span>' : ''}` : '';
+  return `<div class="item"><div class="item-p"><b>${modo === 'mae' ? `${c.hora}, ${esc(c.nome)}` : esc(e.nome)}</b>${modo === 'mae' ? `<span class="meta"><span class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</span>, ${fmtTel(c.tel)}${c.data !== S.cm.dia ? ', ' + fmtCurta(c.data) : ''}</span>${c.motivo ? `<span class="meta">Motivo: ${esc(c.motivo)}</span>` : ''}` : `<span class="meta">${cap(fmtData(c.data))} às ${c.hora}</span>`}${c.protocolo ? `<span class="meta">Protocolo ${esc(c.protocolo)}</span>` : ''}${av}<span class="tag ${st[1]}">${st[0]}${c.status === 'confirmada' && c.confirmadoPor === 'consulente' ? ' pelo consulente' : ''}</span>${pg}${extras}</div>${a ? `<div class="item-a">${a}</div>` : ''}</div>`;
+}
+async function statusCons(id, s) {
+  if (s === 'cancelada' && !confirm('Cancelar esta consulta? O horário fica livre de novo.')) return;
+  const antes = (DB.get('consultas', id) || {}).status;
+  await DB.update('consultas', id, {status:s});
+  const c = DB.get('consultas', id), e = DB.get('entidades', c.entidadeId) || {nome:'a entidade'};
+  if (s === 'cancelada') await liberarSlot(c);
+  if (s === 'faltou' || antes === 'faltou') await atualizarFaltas(c.tel);
+  if (s === 'cancelada') {
+    const fila = DB.all('espera').filter(w => w.entidadeId === c.entidadeId && w.data === c.data && w.status !== 'avisado').sort((a, b) => (a.criadoEm || '').localeCompare(b.criadoEm || ''));
+    modal('Consulta cancelada', `<p>Avise ${esc(primeiro(c.nome))} que a consulta foi cancelada.</p><a class="btn" target="_blank" rel="noopener" href="${wa(c.tel, `Axé, ${primeiro(c.nome)}. Precisamos cancelar sua consulta com ${e.nome} de ${fmtData(c.data)} às ${c.hora}. Você pode marcar outro horário aqui: ${linkPortal('consulta')}`)}">Avisar no WhatsApp</a>
+      ${fila.length ? `<p class="restante" style="margin-top:16px">Há ${fila.length} pessoa(s) na fila de espera deste dia. A primeira é <b>${esc(fila[0].nome)}</b>.</p><a class="btn sec2" target="_blank" rel="noopener" href="${wa(fila[0].tel, msgVaga(fila[0], e))}" onclick="marcarAvisado('${fila[0].id}')">Avisar ${esc(primeiro(fila[0].nome))} que abriu vaga</a>` : ''}`, null);
+  } else if (s === 'compareceu') {
+    modal('Presença registrada', `<p>${esc(c.nome)} compareceu à consulta com ${esc(e.nome)}.</p><div class="item-a"><button type="button" class="btn" onclick="anotar('${c.id}')">Anotar orientações</button><button type="button" class="btn sec2" onclick="marcarRetorno('${c.id}')">Marcar retorno</button><a class="btn sec2" target="_blank" rel="noopener" href="${wa(c.tel, msgAvaliacao(c, e))}">Pedir avaliação</a>${c.valor && c.pagamento !== 'pago' ? `<button type="button" class="btn sec2" onclick="pagarConsultaMae('${c.id}')">Registrar pagamento</button>` : ''}</div>`, null);
+  } else if (s === 'faltou') {
+    const n = DB.all('consultas').filter(x => normTel(x.tel) === normTel(c.tel) && x.status === 'faltou').length, lim = Number(cfg().faltasLimite) || 2;
+    toast(n >= lim ? `Falta registrada. ${primeiro(c.nome)} já tem ${n} falta(s): os próximos agendamentos pedem pagamento antecipado.` : 'Falta registrada.');
+  } else toast('Consulta confirmada.');
+}
+function anotar(cid) {
+  const c = DB.get('consultas', cid), e = DB.get('entidades', c.entidadeId) || {nome:''}, n = DB.get('anotacoes', cid) || {};
+  modal('Orientações da consulta', `<p class="sub">${esc(c.nome)}, ${esc(e.nome)}, ${fmtCurta(c.data)}. Só a Mãe de Santo vê estas anotações.</p>
+    <label>O que a entidade orientou<textarea name="texto" rows="6" placeholder="Ex.: banho de ervas por 7 dias, voltar em 30 dias para firmeza">${esc(n.texto || '')}</textarea></label>`,
+  async d => { await DB.set('anotacoes', cid, {texto:(d.texto || '').trim(), tel:normTel(c.tel), em:new Date().toISOString()}); toast('Orientações salvas na ficha do consulente.'); }, '', 'Salvar orientações', true);
+}
+function marcarRetorno(cid) {
+  const c = DB.get('consultas', cid), ents = DB.all('entidades').filter(e => e.ativa !== false).sort(byNome);
+  const sug = iso(new Date(pd(c.data).getTime() + 30 * 864e5));
+  modal('Marcar retorno', `<p class="sub">Envia para ${esc(primeiro(c.nome))} um link que já abre o agendamento com a entidade e a data sugerida.</p>
+    <label>Entidade<select name="ent">${ents.map(e => `<option value="${e.id}" ${e.id === c.entidadeId ? 'selected' : ''}>${esc(e.nome)}</option>`).join('')}</select></label>
+    <label>Data sugerida<input type="date" name="data" required value="${sug}"></label>
+    <label>Recado (opcional)<input name="msg" placeholder="Ex.: a Vovó pediu para você voltar para a firmeza"></label>`,
+  d => {
+    const e = DB.get('entidades', d.ent) || {nome:''}, u = new URL(linkPortal('consulta'));
+    u.searchParams.set('entidade', d.ent); u.searchParams.set('data', d.data); u.searchParams.set('nome', c.nome); u.searchParams.set('tel', normTel(c.tel)); u.searchParams.set('ret', c.id);
+    window.open(wa(c.tel, `Axé, ${primeiro(c.nome)}! ${d.msg ? d.msg.trim() + '. ' : ''}O retorno com ${e.nome} está sugerido para ${fmtData(d.data)}. Escolha o horário aqui: ${u.href}`), '_blank', 'noopener');
+    toast('Link de retorno aberto no WhatsApp.');
+  }, '', 'Enviar no WhatsApp');
+}
+function consulentes() {
+  const m = {};
+  DB.all('consultas').forEach(c => { const t = normTel(c.tel); if (!t) return; const x = m[t] = m[t] || {tel:t, nome:c.nome, n:0, faltas:0, ultima:''}; x.n++; if (c.status === 'faltou') x.faltas++; if (c.data >= x.ultima) { x.ultima = c.data; x.nome = c.nome; } });
+  return Object.values(m).sort((a, b) => b.ultima.localeCompare(a.ultima));
+}
+function buscarConsulente(v) { S.buscaCons = v; clearTimeout(S._bc); S._bc = setTimeout(() => { render(); const i = $('#bcons'); if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }, 350); }
+function fichaConsulente(tel) {
+  const l = DB.all('consultas').filter(c => normTel(c.tel) === tel).sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora));
+  if (!l.length) return;
+  const faltas = l.filter(c => c.status === 'faltou').length, comp = l.filter(c => ['compareceu','realizada'].includes(c.status)).length;
+  modal(esc(l[0].nome), `<p class="sub">${fmtTel(tel)}. ${l.length} consulta(s), ${comp} atendida(s), ${faltas} falta(s).${faltas >= (Number(cfg().faltasLimite) || 2) ? ' <b>Pagamento antecipado exigido nos próximos agendamentos.</b>' : ''}</p>
+    ${l.map(c => { const e = DB.get('entidades', c.entidadeId) || {nome:''}, st = ST_CONS[c.status] || ['', 'cinza'], n = DB.get('anotacoes', c.id); return `<div class="item"><div class="item-p"><b class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</b><span class="meta">${cap(fmtData(c.data))} às ${c.hora}</span>${c.motivo ? `<span class="meta">Motivo: ${esc(c.motivo)}</span>` : ''}${n && n.texto ? `<p class="anotacao">${esc(n.texto).replace(/\n/g, '<br>')}</p>` : ''}${c.avaliacao ? `<span class="meta">Avaliação: ${c.avaliacao.nota}/10</span>` : ''}<span class="tag ${st[1]}">${st[0]}</span></div><div class="item-a"><button type="button" class="btn-ico" onclick="anotar('${c.id}')">${n ? 'Editar orientações' : 'Anotar orientações'}</button></div></div>`; }).join('')}`,
+  null, `<a class="btn sec2" target="_blank" rel="noopener" href="${wa(tel, `Axé, ${primeiro(l[0].nome)}!`)}">WhatsApp</a><button type="button" class="btn sec2" onclick="marcarRetorno('${l[0].id}')">Marcar retorno</button>`, 'Salvar', true);
+}
+async function alternarSlot(ent, data, hora) {
+  const sid = slotId(ent, data, hora), o = DB.get('ocupacao', sid);
+  if (o && o.ativo && !o.bloqueado) return;
+  if (o && o.bloqueado) { await DB.del('ocupacao', sid); toast(`${hora} reaberto.`); }
+  else { await DB.set('ocupacao', sid, {entidadeId:ent, data, hora, ativo:true, bloqueado:true}); toast(`${hora} fechado para agendamento.`); }
+}
+function mCons() {
+  const cm = S.cm, [y, m] = cm.mes.split('-').map(Number), bl = new Set(cfg().bloqueios || []);
+  const cons = DB.all('consultas').filter(c => c.data.startsWith(cm.mes) && c.status !== 'cancelada');
+  const grade = gradeMes(cm.mes, (ds, d) => { const n = cons.filter(c => c.data === ds).length; return `<button class="dia ${ds === cm.dia ? 'sel' : ''} ${ds === hoje() ? 'hoje' : ''} ${bl.has(ds) ? 'bloq' : ''}" onclick="S.cm.dia='${ds}';render()" aria-label="${fmtData(ds)}, ${n} consulta(s)"><span>${d}</span>${n ? `<i>${n}</i>` : ''}</button>`; });
+  const lista = DB.all('consultas').filter(c => c.data === cm.dia).sort(byHora);
+  const fila = DB.all('espera').filter(w => w.data === cm.dia).sort((a, b) => (a.criadoEm || '').localeCompare(b.criadoEm || ''));
+  const ents = DB.all('entidades').sort(byNome);
+  const entsDia = ents.filter(e => e.ativa !== false && (e.dias || []).includes(pd(cm.dia).getDay()) && (e.horarios || []).length);
+  const avs = DB.all('consultas').filter(c => c.avaliacao).sort((a, b) => (b.avaliacao.em || '').localeCompare(a.avaliacao.em || ''));
+  const busca = (S.buscaCons || '').trim().toLowerCase(), bd = dig(busca);
+  const cls = consulentes().filter(x => !busca || x.nome.toLowerCase().includes(busca) || (bd.length >= 3 && x.tel.includes(bd))).slice(0, busca ? 20 : 8);
+  const slots = e => e.horarios.map(h => {
+    const o = DB.get('ocupacao', slotId(e.id, cm.dia, h));
+    const temCons = lista.some(c => c.entidadeId === e.id && c.hora === h && c.status !== 'cancelada');
+    const st = o && o.ativo && o.bloqueado ? 'fechado' : (o && o.ativo) || temCons ? 'ocupado' : 'livre';
+    return `<button class="slot ${st}" ${st === 'ocupado' ? 'disabled' : ''} onclick="alternarSlot('${e.id}','${cm.dia}','${h}')" title="${st === 'fechado' ? 'Toque para reabrir' : st === 'livre' ? 'Toque para fechar' : 'Horário agendado'}">${h}</button>`;
+  }).join('');
+  return `<div class="acoes"><button class="btn sec2" onclick="copiar(linkPortal('consulta'),'Link de agendamento copiado.')">Copiar link de agendamento</button></div>
+  <section class="sec"><div class="cal-cab"><h2>${MESES_L[m-1]} de ${y}</h2><div class="ano-nav"><button class="btn-ico" onclick="mudaMesCons(-1)" aria-label="Mês anterior">‹</button><button class="btn-ico" onclick="S.cm={mes:hoje().slice(0,7),dia:hoje()};render()">Hoje</button><button class="btn-ico" onclick="mudaMesCons(1)" aria-label="Próximo mês">›</button></div></div>${grade}</section>
+  <section class="sec"><div class="cal-cab"><h2>${cap(fmtData(cm.dia))}</h2><button class="btn-ico ${bl.has(cm.dia) ? 'ok' : 'perigo'}" onclick="bloquear('${cm.dia}')">${bl.has(cm.dia) ? 'Reabrir o dia' : 'Fechar o dia inteiro'}</button></div>
+  ${bl.has(cm.dia) ? '<p class="faixa">Dia fechado: os consulentes não conseguem agendar.</p>' : ''}
+  ${!bl.has(cm.dia) && entsDia.length ? `<div class="horarios-dia">${entsDia.map(e => `<div><span class="rot ${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</span><div class="slots">${slots(e)}</div></div>`).join('')}<p class="legenda-slot"><span class="slot livre">livre</span> toque para fechar <span class="slot fechado">fechado</span> toque para reabrir <span class="slot ocupado">agendado</span></p></div>` : ''}
+  ${lista.length ? lista.map(c => rowConsulta(c, 'mae')).join('') : '<p class="vazio">Nenhuma consulta neste dia.</p>'}
+  ${fila.length ? `<h2>Fila de espera (${fila.length})</h2>${fila.map(w => { const e = DB.get('entidades', w.entidadeId) || {nome:''}; return `<div class="item"><div class="item-p"><b>${esc(w.nome)}</b><span class="meta">${esc(e.nome)}, ${fmtTel(w.tel)}</span><span class="tag ${w.status === 'avisado' ? 'azul' : 'amarelo'}">${w.status === 'avisado' ? 'Avisado de vaga' : 'Aguardando vaga'}</span></div><div class="item-a"><a class="btn-ico" target="_blank" rel="noopener" href="${wa(w.tel, msgVaga(w, e))}" onclick="marcarAvisado('${w.id}')">Avisar que abriu vaga</a><button class="btn-ico perigo" onclick="excluir('espera','${w.id}','Tirar da fila de espera?')">Tirar da fila</button></div></div>`; }).join('')}` : ''}</section>
+  <section class="sec"><h2>Consulentes</h2><label>Buscar por nome ou celular<input id="bcons" value="${esc(S.buscaCons || '')}" oninput="buscarConsulente(this.value)" placeholder="Digite o nome ou parte do número"></label>
+    ${cls.length ? cls.map(x => `<div class="item"><div class="item-p"><b>${esc(x.nome)}</b><span class="meta">${fmtTel(x.tel)}, ${x.n} consulta(s)${x.faltas ? `, <b style="color:var(--alerta)">${x.faltas} falta(s)</b>` : ''}, última em ${fmtCurta(x.ultima)}</span></div><div class="item-a"><button class="btn-ico" onclick="fichaConsulente('${x.tel}')">Ver ficha</button></div></div>`).join('') : '<p class="vazio">Nenhum consulente encontrado.</p>'}</section>
+  ${avs.length ? `<section class="sec"><h2>Avaliações dos consulentes</h2><p class="sub">Média ${(avs.reduce((s2, c) => s2 + c.avaliacao.nota, 0) / avs.length).toFixed(1).replace('.', ',')} de 10, em ${avs.length} avaliação(ões).</p>${avs.slice(0, 6).map(c => { const e = DB.get('entidades', c.entidadeId) || {nome:''}; return `<div class="item"><div class="item-p"><b>${c.avaliacao.nota}/10, ${esc(c.nome)}</b><span class="meta">${esc(e.nome)}, ${fmtCurta(c.data)}</span>${c.avaliacao.comentario ? `<span>“${esc(c.avaliacao.comentario)}”</span>` : ''}</div></div>`; }).join('')}</section>` : ''}
+  <section class="sec"><h2>Entidades que atendem</h2>${ents.map(e => `<div class="item"><div class="item-p"><b class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</b>${e.linha ? `<span class="meta">${esc(e.linha)}</span>` : ''}<span class="meta">${(e.dias || []).map(d => DIAS[d]).join(', ') || 'Sem dias definidos'}, das ${e.ini} às ${e.fim}, a cada ${e.int} min${e.valor ? `, consulta ${brl(e.valor)}` : ''}</span>${e.ativa === false ? '<span class="tag cinza">Agenda fechada</span>' : ''}</div><div class="item-a"><button class="btn-ico" onclick="formEntidade('${e.id}')">Editar</button></div></div>`).join('')}
+  <button class="btn sec2" style="margin-top:8px" onclick="formEntidade()">Adicionar entidade</button></section>`;
+}
+
+/* ============================================================
+   CONSULENTE: GIRAS ABERTAS, RETORNO, FALTAS E CONTRIBUIÇÃO
+   ============================================================ */
+function slotsLivres(e, data) {
+  const ocup = new Set(DB.all('ocupacao').filter(o => o.entidadeId === e.id && o.data === data && o.ativo).map(o => o.hora));
+  if (DB.mode !== 'firebase') DB.all('consultas').filter(c => c.entidadeId === e.id && c.data === data && c.status !== 'cancelada').forEach(c => ocup.add(c.hora));
+  let l = (e.horarios || []).filter(h => !ocup.has(h));
+  if (data === hoje()) { const n = new Date(), m = n.getHours()*60 + n.getMinutes(); l = l.filter(h => toMin(h) > m + 30); }
+  return l;
+}
+function escolherEnt(id) { S.ag = {ent:id, nome:S.ag.nome, tel:S.ag.tel, motivo:S.ag.motivo, lgpd:S.ag.lgpd, retornoDe:S.ag.retornoDe}; render(); }
+function vConsulta() {
+  if (S.avaliar) return vAvaliar();
+  if (S.confirmar) return vConfirmar();
+  if (S.consultaFeita && DB.get('consultas', S.consultaFeita)) { const c = DB.get('consultas', S.consultaFeita); return `${cabecalho('Agendar consulta')}<main class="pag"><div class="${ehPadilha(DB.get('entidades', c.entidadeId)) ? 'tema-padilha' : ''}">${ticket(c, true)}</div></main>`; }
+  const A = S.ag, bl = new Set(cfg().bloqueios || []);
+  const ents = DB.all('entidades').filter(e => e.ativa !== false && (e.dias || []).length && (e.horarios || []).length).sort(byNome);
+  const giras = DB.all('avisos').filter(a => a.publico && a.data && a.data >= hoje()).sort(ordAviso).slice(0, 4);
+  let h = boasVindas();
+  if (giras.length) h += `<section class="sec"><h2>Giras abertas ao público</h2>${giras.map(a => `<div class="item"><div class="item-p"><b>${esc(a.titulo)}</b><span class="meta">${cap(fmtData(a.data))}${a.hora ? ' às ' + a.hora : ''}</span>${a.texto ? `<span>${esc(a.texto).replace(/\n/g, '<br>')}</span>` : ''}</div></div>`).join('')}</section>`;
+  if (A.retornoDe && A.data) h += `<p class="faixa">A casa sugeriu o seu retorno para ${fmtData(A.data)}. Se não houver horário nesse dia, escolha outro no calendário.</p>`;
+  h += `<section class="sec"><h2><span class="passo">1</span>Com qual entidade?</h2>${ents.length ? `<div class="escolhas">${ents.map(e => `<button class="${A.ent === e.id ? 'on' : ''} ${ehPadilha(e) ? 'ent-padilha' : ''}" onclick="escolherEnt('${e.id}')"><b>${esc(e.nome)}</b>${e.linha ? `<span>${esc(e.linha)}</span>` : ''}<span>${e.dias.map(d => DIAS[d]).join(', ')}, a partir das ${e.ini}</span>${e.valor ? `<span>Consulta ${brl(e.valor)}</span>` : ''}</button>`).join('')}</div>` : '<p class="vazio">A agenda de consultas está fechada no momento.</p>'}</section>`;
+  const e = A.ent && DB.get('entidades', A.ent);
+  if (e) {
+    const mes = A.mes || hoje().slice(0,7), [y, m] = mes.split('-').map(Number), lim = iso(new Date(Date.now() + 60*864e5));
+    const grade = gradeMes(mes, (ds, d) => {
+      const ok = ds >= hoje() && ds <= lim && e.dias.includes(pd(ds).getDay()) && !bl.has(ds);
+      const livres = ok ? slotsLivres(e, ds).length : 0;
+      return `<button class="dia ${A.data === ds ? 'sel' : ''} ${ds === hoje() ? 'hoje' : ''} ${livres ? 'livre' : ''} ${ok && !livres ? 'lotado' : ''}" ${ok ? '' : 'disabled'} onclick="S.ag.data='${ds}';S.ag.hora=null;render()" aria-label="${fmtData(ds)}${ok ? (livres ? ', ' + livres + ' horários livres' : ', lotado') : ', sem atendimento'}"><span>${d}</span>${livres ? `<i>${livres}</i>` : ''}</button>`;
+    });
+    h += `<section class="sec"><h2><span class="passo">2</span>Escolha o dia</h2><div class="cal-cab"><span class="mes-nome">${MESES_L[m-1]} de ${y}</span><div class="ano-nav"><button class="btn-ico" ${mes > hoje().slice(0,7) ? '' : 'disabled'} onclick="S.ag.mes=somaMes('${mes}',-1);render()" aria-label="Mês anterior">‹</button><button class="btn-ico" ${mes < lim.slice(0,7) ? '' : 'disabled'} onclick="S.ag.mes=somaMes('${mes}',1);render()" aria-label="Próximo mês">›</button></div></div>${grade}<p class="legenda-c"><i></i>Dias com horário livre (o número mostra quantos)</p></section>`;
+    if (A.data) {
+      const diaOk = e.dias.includes(pd(A.data).getDay()) && !bl.has(A.data) && A.data >= hoje();
+      const livres = diaOk ? slotsLivres(e, A.data) : [];
+      h += `<section class="sec"><h2><span class="passo">3</span>Escolha o horário</h2><p class="sub">${cap(fmtData(A.data))}</p>${!diaOk ? `<p class="vazio">${esc(e.nome)} não atende neste dia. Escolha outro no calendário.</p>` : livres.length ? `<div class="escolhas horas">${livres.map(x => `<button class="${A.hora === x ? 'on' : ''}" onclick="S.ag.hora='${x}';render()">${x}</button>`).join('')}</div>` : filaForm()}</section>`;
+      if (A.hora && livres.includes(A.hora)) {
+        const ex = A.exige;
+        h += `<section class="sec"><h2><span class="passo">4</span>Seus dados</h2><form class="form-cons" onsubmit="return agendar(event)">
+        <label>Nome completo<input required value="${esc(A.nome || '')}" oninput="S.ag.nome=this.value" autocomplete="name"></label>
+        <label>Celular (WhatsApp)<input required inputmode="tel" value="${esc(A.tel || '')}" oninput="S.ag.tel=this.value" placeholder="(45) 99999-9999" autocomplete="tel"></label>
+        <label>Quer adiantar o motivo da consulta? (opcional)<textarea rows="2" oninput="S.ag.motivo=this.value">${esc(A.motivo || '')}</textarea></label>
+        <label class="chk"><input type="checkbox" required ${A.lgpd ? 'checked' : ''} onchange="S.ag.lgpd=this.checked"><span>Autorizo a casa a usar meu nome e celular somente para este agendamento e os lembretes dele (LGPD).</span></label>
+        ${ex ? `<div class="orient"><h3>Pagamento antecipado</h3><p>Como há ${ex.n} falta(s) em consultas anteriores com este celular, a casa pede o pagamento antecipado de <b>${brl(ex.valor)}</b> para confirmar o agendamento.</p><div class="qr">${qrImg(S.pixCode)}</div><button type="button" class="btn sec2" style="width:100%;margin-bottom:12px" onclick="copiar(S.pixCode,'Pix copia e cola copiado. Cole no app do banco.')">Copiar Pix copia e cola</button><label>Comprovante do pagamento<input type="file" name="comp" accept="image/*,application/pdf" required></label></div>`
+          : e.valor ? `<p class="faixa">Valor da consulta: <b>${brl(e.valor)}</b>. Você pode pagar antecipado pelo PIX depois de agendar ou pagar no dia.</p>` : ''}
+        <button class="btn">Agendar com ${esc(e.nome)}, ${fmtData(A.data)} às ${A.hora}</button></form></section>`;
+      }
+    }
+  }
+  const minhas = DB.all('consultas').filter(c => c.uid && c.uid === meuUid()).sort((a, b) => (b.data + b.hora).localeCompare(a.data + a.hora)).slice(0, 10);
+  if (minhas.length) h += `<section class="sec"><h2>Suas consultas</h2><p class="sub">Agendadas neste aparelho.</p>${minhas.map(c => rowConsulta(c, 'cons')).join('')}</section>`;
+  h += `<section class="sec contrib"><h2>Contribua com a casa</h2><p class="sub">A casa se mantém com a ajuda de quem acredita no trabalho. Qualquer valor é bem-vindo.</p><button class="btn" onclick="contribuir()">Contribuir pelo PIX</button></section>`;
+  return `${cabecalho('Agendar consulta')}<main class="pag"><div class="${ehPadilha(e) ? 'tema-padilha' : ''}">${h}</div></main>`;
+}
+async function agendar(ev) {
+  ev.preventDefault();
+  const A = S.ag, tel = normTel(A.tel), e = DB.get('entidades', A.ent);
+  if (!(A.nome || '').trim()) { toast('Informe seu nome.'); return false; }
+  if (tel.length < 10) { toast('Informe o celular com DDD, ex.: (45) 99999-9999.'); return false; }
+  if (!A.lgpd) { toast('Marque a autorização para continuar.'); return false; }
+  if (DB.mode === 'firebase' && !DB.uid) { toast('O agendamento está indisponível no momento. Tente mais tarde.'); return false; }
+  const btn = ev.target.querySelector('button.btn:not([type=button])'); btn.disabled = true;
+  try {
+    const nFaltas = await contarFaltas(tel), lim = Number(cfg().faltasLimite) || 2;
+    let arq = null, valor = Number(e.valor) || 0;
+    if (nFaltas >= lim) {
+      valor = valor || num(cfg().sinalFalta) || 20;
+      const inp = ev.target.querySelector('input[name=comp]'), file = inp && inp.files[0];
+      if (!A.exige || A.exige.tel !== tel || !file) {
+        const p = pixDe('mensalidade'), k = cfg();
+        S.pixCode = brcode(p.chave, p.tipo, valor, k.casa, k.cidade);
+        S.ag.exige = {n:nFaltas, valor, tel}; render();
+        setTimeout(() => { const o = $('.form-cons .orient'); if (o) o.scrollIntoView({behavior:'smooth', block:'center'}); }, 60);
+        toast(`Para este celular, a casa pede o pagamento antecipado de ${brl(valor)}. Pague e envie o comprovante.`);
+        return false;
+      }
+      arq = await lerArquivo(file);
+    }
+    const cid = uidLongo(), slot = slotId(A.ent, A.data, A.hora), diario = `${await hashTel(tel)}_${A.data}`;
+    const dados = {entidadeId:A.ent, data:A.data, hora:A.hora, nome:A.nome.trim(), tel, motivo:(A.motivo || '').trim(), lgpd:true, valor, uid:meuUid(),
+      protocolo:`VC${A.data.slice(2).replace(/-/g,'')}-${A.hora.replace(':','')}${rnd(2)}`, status:'agendada', retornoDe:A.retornoDe || '', criadoEm:new Date().toISOString()};
+    if (arq) {
+      dados.comprovanteId = await DB.putComp({conta:'consulta', consultaId:cid, nome:dados.nome, total:valor, mime:arq.mime, dados:arq.dados, enviadoEm:new Date().toISOString()});
+      dados.pagamento = 'informado'; dados.pagamentoInformadoEm = new Date().toISOString(); dados.exigiuPagamento = true;
+    }
+    const r = await DB.reservar(cid, dados, slot, diario);
+    if (r === 'ocupado') { toast('Esse horário acabou de ser ocupado. Escolha outro.'); S.ag.hora = null; render(); return false; }
+    if (r === 'dia') { toast('Este celular já tem uma consulta marcada neste dia.'); btn.disabled = false; return false; }
+    if (params.get('ret')) history.replaceState(null, '', location.pathname);
+    S.consultaFeita = cid; S.ag = {}; render(); scrollTo(0,0);
+  } catch (err) { console.error(err); toast(err && err.message && !err.code ? err.message : 'Não foi possível agendar. Verifique a internet e tente de novo.'); if (btn) btn.disabled = false; }
+  return false;
+}
+async function desmarcar(id) {
+  if (!confirm('Desmarcar esta consulta? O horário fica livre para outra pessoa.')) return;
+  try { await DB.update('consultas', id, {status:'cancelada', canceladoPor:'consulente'}); await liberarSlot(DB.get('consultas', id)); toast('Consulta desmarcada.'); }
+  catch (e) { console.error(e); toast('Não foi possível desmarcar. Verifique a internet.'); }
+}
+async function respConfirmar(s) {
+  if (s === 'cancelada' && !confirm('Desmarcar a consulta? O horário fica livre para outra pessoa.')) return;
+  try {
+    await DB.update('consultas', S.confirmar, s === 'confirmada' ? {status:'confirmada', confirmadoPor:'consulente', confirmadoEm:new Date().toISOString()} : {status:'cancelada', canceladoPor:'consulente'});
+    if (s === 'cancelada') await liberarSlot(DB.get('consultas', S.confirmar));
+    toast(s === 'confirmada' ? 'Presença confirmada. Axé!' : 'Consulta desmarcada.');
+  } catch (e) { console.error(e); toast('Não foi possível registrar. Verifique a internet.'); }
+}
+function contribuir() {
+  const p = pixDe('mensalidade');
+  if (!p.chave) return toast('A casa ainda não cadastrou a chave PIX.');
+  modal('Contribuir com a casa', `<span class="rot">Escolha um valor</span><div class="item-a" style="margin:4px 0 12px">${[10, 20, 50, 100].map(v => `<button type="button" class="btn-ico" onclick="$('#mf').valor.value='${fmtNum(v)}';pixContrib()">${brl(v)}</button>`).join('')}</div>
+    <label>Ou digite o valor (R$)<input name="valor" inputmode="decimal" required oninput="pixContrib()"></label><div id="pixContrib"></div>
+    <label>Seu nome (opcional)<input name="nome"></label><label>Comprovante (opcional)<input type="file" name="arq" accept="image/*,application/pdf"></label>`,
+  async (d, form) => {
+    const v = num(d.valor); if (!v) { toast('Informe o valor.'); return false; }
+    let compId = ''; const f = form.arq.files[0];
+    if (f) { let arq; try { arq = await lerArquivo(f); } catch (e) { toast(e.message); return false; } compId = await DB.putComp({conta:'contribuicao', nome:(d.nome || '').trim(), total:v, mime:arq.mime, dados:arq.dados, enviadoEm:new Date().toISOString()}); }
+    await DB.set('contribuicoes', null, {nome:(d.nome || '').trim(), valor:v, comprovanteId:compId, status:'informado', uid:meuUid() || '', criadoEm:new Date().toISOString()});
+    toast('Obrigada pela contribuição! Axé.');
+  }, '', 'Avisar que contribuí');
+}
+function pixContrib() {
+  const f = $('#mf'), v = num(f.valor.value), el = $('#pixContrib'), p = pixDe('mensalidade'), k = cfg();
+  if (!v) { el.innerHTML = ''; return; }
+  S.pixCode = brcode(p.chave, p.tipo, v, k.casa, k.cidade);
+  el.innerHTML = `<div class="qr">${qrImg(S.pixCode)}</div><button type="button" class="btn" style="width:100%" onclick="copiar(S.pixCode,'Pix copia e cola copiado. Cole no app do banco.')">Copiar Pix copia e cola de ${brl(v)}</button><div class="pix-chave"><span>Chave PIX da casa</span><b>${esc(p.chave)}</b></div>`;
+}
 
 /* ---------- início ---------- */
 (async () => {
