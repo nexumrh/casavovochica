@@ -386,6 +386,14 @@ dialog h2{color:var(--anil);font-size:24px;margin-bottom:14px}
 .passos{margin:0 0 12px;padding-left:22px;display:grid;gap:10px}
 .links-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:16px}
 .link-card{background:var(--branco);border-radius:18px;padding:20px;display:flex;gap:18px;align-items:flex-start;box-shadow:0 1px 2px rgba(74,37,116,.06);flex-wrap:wrap}
+.valor-mes{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:14px;padding-top:14px;border-top:1px solid var(--linha)}
+.valor-mes label{margin:0;flex:0 1 200px}
+.valor-mes label:nth-child(2){flex-basis:130px}
+.hist-valores{margin:4px 0 0;font-size:14px}
+.qr-mini img{width:64px;height:64px;image-rendering:pixelated;border:1px solid var(--linha);border-radius:8px;display:block}
+.item-link{align-items:center}
+.item-link .item-p{flex-basis:200px}
+.cl[hidden]{display:none}
 .qr-link img{width:132px;height:132px;image-rendering:pixelated;border:1px solid var(--linha);border-radius:12px;display:block}
 .link-info{flex:1 1 220px;min-width:0}
 .link-info h3{font-size:24px;color:var(--anil)}
@@ -478,7 +486,7 @@ function brcode(chave, tipo, valor, nome, cidade) {
 function qrImg(txt) { try { const q = qrcode(0, 'M'); q.addData(txt); q.make(); return q.createImgTag(5, 8, 'QR Code PIX'); } catch (e) { return ''; } }
 
 /* ---------- banco de dados ---------- */
-const COLS_TODAS = ['filhos','cobrancas','avisos','entidades','consultas','config','produtos','mural','espera'];
+const COLS_TODAS = ['filhos','cobrancas','avisos','entidades','consultas','config','produtos','mural','espera','links'];
 const COLS = {mae:COLS_TODAS, filho:['filhos','cobrancas','avisos','config','mural'], consulta:['entidades','consultas','config']}[PORTAL];
 const DB = {
   cache:{}, mode:'local', fs:null, erro:false,
@@ -1362,7 +1370,8 @@ function mFin() {
   ${gs.length ? `<section class="sec destaque"><h2>Comprovantes para conferir</h2>${gs.map(rowGrupo).join('')}</section>` : ''}
   <section class="sec"><div class="linha-form"><label>Mês de referência<input type="month" value="${S.comp}" onchange="S.comp=this.value;render()"></label>
     ${k === 'mensalidade' ? `<button class="btn" onclick="gerarCobrancas()">Gerar mensalidades do mês</button><button class="btn sec2" onclick="formCobranca()">Cobrança avulsa</button>` : `<button class="btn padilha" onclick="formLoja()">Lançar compra na loja</button>`}</div>
-    <p class="sub" style="margin:12px 0 0">PIX ${k === 'loja' ? 'da loja' : 'da mensalidade'}: ${esc(pixDe(k).chave) || 'não cadastrado'}${k === 'mensalidade' ? `. Valor padrão ${brl(c.valorPadrao)}, vencimento dia ${c.diaVenc}.` : '.'}</p>
+    ${k === 'mensalidade' ? valorMensalHTML() : ''}
+    <p class="sub" style="margin:12px 0 0">PIX ${k === 'loja' ? 'da loja' : 'da mensalidade'}: ${esc(pixDe(k).chave) || 'não cadastrado'}.</p>
     <p class="sub" style="margin:4px 0 0">Entradas em ${compLabel(S.comp)}: ${entradas.length ? brl(sum(entradas)) + formasTxt(entradas) : 'nenhuma ainda'}.</p>
     <div class="item-a" style="margin-top:12px"><button class="btn-ico" onclick="cobrarAtrasados()">Cobrar todos os atrasados</button><button class="btn-ico" onclick="fechamento()">Fechamento de ${compLabel(S.comp)} em PDF</button></div></section>
   <section class="sec"><div class="cal-cab"><h2>Calendário de ${ano}</h2><div class="ano-nav"><button class="btn-ico" onclick="S.fin.ano--;render()" aria-label="Ano anterior">‹</button><b>${ano}</b><button class="btn-ico" onclick="S.fin.ano++;render()" aria-label="Próximo ano">›</button></div></div>
@@ -1712,29 +1721,118 @@ async function enviarAvaliacao(ev) {
   return false;
 }
 
+/* --- Valor da mensalidade (muda quando a casa decidir) --- */
+function valorMensalHTML() {
+  const c = cfg(), hist = (c.historicoValores || []).slice(-4).reverse();
+  return `<div class="valor-mes"><label>Valor da mensalidade (R$)<input id="vPadrao" inputmode="decimal" value="${fmtNum(c.valorPadrao)}"></label>
+    <label>Vence todo dia<input id="vDia" type="number" min="1" max="31" value="${c.diaVenc}"></label>
+    <button class="btn sec2" onclick="salvarValorMensal()">Alterar valor</button></div>
+    <p class="sub" style="margin:8px 0 0">Vale a partir de ${compLabel(S.comp)} para as mensalidades geradas. Filhos com valor próprio, desconto ou isenção seguem a regra da ficha deles.</p>
+    ${hist.length ? `<p class="sub hist-valores">Histórico: ${hist.map(h => h.desde === '0000-00' ? `${brl(h.valor)} antes disso` : `${brl(h.valor)} desde ${compLabel(h.desde)}`).join('; ')}.</p>` : ''}`;
+}
+function salvarValorMensal() {
+  const c = cfg(), v = num($('#vPadrao').value), dia = Math.min(31, Math.max(1, parseInt($('#vDia').value) || c.diaVenc));
+  if (!v) return toast('Informe o valor da mensalidade.');
+  if (v === Number(c.valorPadrao) && dia === Number(c.diaVenc)) return toast('O valor e o vencimento já são estes.');
+  const pend = DB.all('cobrancas').filter(x => contaDe(x) === 'mensalidade' && x.tipo === 'mensal' && x.competencia >= S.comp && x.status === 'pendente' && !x.motivoRecusa && (() => { const f = DB.get('filhos', x.filhoId); return f && !f.valor; })());
+  modal('Alterar a mensalidade', `<p>A mensalidade passa de <b>${brl(c.valorPadrao)}</b> para <b>${brl(v)}</b>${dia !== Number(c.diaVenc) ? `, com vencimento todo dia ${dia}` : ''}, a partir de <b>${compLabel(S.comp)}</b>.</p>
+    ${pend.length ? `<label class="chk"><input type="checkbox" name="aplicar" checked><span>Atualizar também ${pend.length} mensalidade(s) em aberto de ${compLabel(S.comp)} em diante, que ainda estão no valor antigo<br><small>Pagas, em conferência e de filhos com valor próprio não mudam.</small></span></label>` : '<p class="sub">Nenhuma mensalidade em aberto será alterada.</p>'}`,
+  async d => {
+    const hist = (c.historicoValores || []).filter(h => h.desde !== S.comp);
+    if (!hist.length) hist.push({desde:'0000-00', valor:Number(c.valorPadrao)});
+    hist.push({desde:S.comp, valor:v, em:new Date().toISOString()});
+    hist.sort((a, b) => a.desde.localeCompare(b.desde));
+    await DB.set('config', 'casa', {...c, valorPadrao:v, diaVenc:dia, historicoValores:hist});
+    let n = 0;
+    if (d.aplicar) for (const x of pend) { const f = DB.get('filhos', x.filhoId); if (f.isento) continue; const novo = valorMensal(f); if (novo !== x.valor) { await DB.update('cobrancas', x.id, {valor:novo}); n++; } }
+    toast(`Mensalidade alterada para ${brl(v)}.${n ? ` ${n} cobrança(s) em aberto atualizada(s).` : ''}`);
+  }, '', 'Confirmar alteração');
+}
+
 /* --- Links automáticos e QR Codes --- */
 const linkEntidade = id => { const u = new URL(linkPortal('consulta')); u.searchParams.set('entidade', id); return u.href; };
 function qrGrande(txt) { try { const q = qrcode(0, 'M'); q.addData(txt); q.make(); return q.createImgTag(8, 16, 'QR Code'); } catch (e) { return ''; } }
-function mLinks() {
+const slug = t => String(t || 'link').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'link';
+const TIPOS_LINK = {consulta:'Agendamento de consultas', entidade:'Agendamento com uma entidade', filho:'Portal dos Filhos', whatsapp:'Conversa no WhatsApp', externo:'Outro endereço (Instagram, localização, site)'};
+function urlDoLink(l) {
+  if (l.tipo === 'consulta') return linkPortal('consulta');
+  if (l.tipo === 'filho') return linkPortal('filho');
+  if (l.tipo === 'entidade') return linkEntidade(l.entidadeId);
+  if (l.tipo === 'whatsapp') return `https://wa.me/55${normTel(l.tel)}${l.msg ? '?text=' + encodeURIComponent(l.msg) : ''}`;
+  return l.url || '';
+}
+function baixarQR(url, nome) {
+  try {
+    const q = qrcode(0, 'M'); q.addData(url); q.make();
+    const cel = 14, mg = cel * 4, n = q.getModuleCount(), tam = n * cel + mg * 2;
+    const cv = document.createElement('canvas'); cv.width = cv.height = tam;
+    const cx = cv.getContext('2d'); cx.fillStyle = '#fff'; cx.fillRect(0, 0, tam, tam); cx.fillStyle = '#000';
+    for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (q.isDark(r, c)) cx.fillRect(mg + c * cel, mg + r * cel, cel, cel);
+    cv.toBlob(b => { baixarArq(b, `qrcode-${slug(nome)}.png`); toast('QR Code baixado.'); }, 'image/png');
+  } catch (e) { console.error(e); toast('Não foi possível gerar o QR Code.'); }
+}
+function imprimirCartaz(titulo, texto, url) {
   const c = cfg();
-  const itens = [
-    ['filho', 'Portal dos Filhos', 'Mensalidades, conta da loja, agenda e mural. Cada filho entra com o celular cadastrado.', `Axé! Este é o portal dos filhos da ${c.casa}: ${linkPortal('filho')}\nEntre com o seu número de celular.`],
-    ['consulta', 'Agendamento de consultas', 'Página aberta para os consulentes marcarem consulta com as entidades.', `Agende sua consulta com as entidades da ${c.casa}: ${linkPortal('consulta')}`]
-  ];
-  const ents = DB.all('entidades').filter(e => e.ativa !== false).sort(byNome);
-  return `<section class="sec"><h2>Links e QR Codes</h2><p class="sub">Os links são criados automaticamente a partir do endereço deste portal. Se os portais estiverem em outro endereço, ajuste em Configurações.</p></section>
-  <div class="links-grid">${itens.map(([k, t, d, msg]) => `<article class="link-card"><div class="qr-link">${qrImg(linkPortal(k))}</div><div class="link-info"><h3>${t}</h3><p class="sub">${d}</p><div class="url">${esc(linkPortal(k))}</div>
-    <div class="item-a"><button class="btn" onclick="copiar(linkPortal('${k}'),'Link copiado.')">Copiar link</button><a class="btn sec2" href="${esc(linkPortal(k))}" target="_blank" rel="noopener">Abrir</a><a class="btn sec2" target="_blank" rel="noopener" href="${wa('', msg)}">Enviar no WhatsApp</a><button class="btn sec2" onclick="imprimirQR('${k}')">Imprimir cartaz</button></div></div></article>`).join('')}</div>
-  ${ents.length ? `<section class="sec"><h2>Link direto de cada entidade</h2><p class="sub">Abre o agendamento com a entidade já escolhida. Bom para divulgar a agenda de uma entidade específica.</p>
-    ${ents.map(e => `<div class="item"><div class="item-p"><b class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</b><span class="meta url-curta">${esc(linkEntidade(e.id))}</span></div><div class="item-a"><button class="btn-ico" onclick="copiar(linkEntidade('${e.id}'),'Link da entidade copiado.')">Copiar link</button><a class="btn-ico" target="_blank" rel="noopener" href="${wa('', `Agende sua consulta com ${e.nome} na ${c.casa}: ${linkEntidade(e.id)}`)}">Enviar no WhatsApp</a><button class="btn-ico" onclick="imprimirQR('consulta','${e.id}')">Imprimir cartaz</button></div></div>`).join('')}</section>` : ''}`;
+  imprimir(`<div class="cartaz"><img class="cartaz-logo" src="${LOGO}" alt=""><p class="cartaz-casa">${esc(c.casa)}</p><h1>${esc(titulo)}</h1><div class="cartaz-qr">${qrGrande(url)}</div><p class="cartaz-txt">${esc(texto)}</p><p class="cartaz-url">${esc(url)}</p></div>`, titulo);
 }
 function imprimirQR(k, entId) {
-  const c = cfg(), e = entId && DB.get('entidades', entId);
-  const url = e ? linkEntidade(entId) : linkPortal(k);
-  const titulo = k === 'filho' ? 'Portal dos Filhos' : e ? `Agende sua consulta com ${esc(e.nome)}` : 'Agende sua consulta';
-  const texto = k === 'filho' ? 'Aponte a câmera do celular para acessar suas mensalidades, a agenda da casa e o mural. Entre com o seu número de celular.' : 'Aponte a câmera do celular para escolher o dia e o horário do seu atendimento.';
-  imprimir(`<div class="cartaz"><img class="cartaz-logo" src="${LOGO}" alt=""><p class="cartaz-casa">${esc(c.casa)}</p><h1>${titulo}</h1><div class="cartaz-qr">${qrGrande(url)}</div><p class="cartaz-txt">${texto}</p><p class="cartaz-url">${esc(url)}</p></div>`, titulo.replace(/<[^>]+>/g, ''));
+  const e = entId && DB.get('entidades', entId);
+  imprimirCartaz(k === 'filho' ? 'Portal dos Filhos' : e ? `Agende sua consulta com ${e.nome}` : 'Agende sua consulta',
+    k === 'filho' ? 'Aponte a câmera do celular para acessar suas mensalidades, a agenda da casa e o mural. Entre com o seu número de celular.' : 'Aponte a câmera do celular para escolher o dia e o horário do seu atendimento.',
+    e ? linkEntidade(entId) : linkPortal(k));
 }
+/* ações dos links: fixos (filho, consulta), de entidade (ent:ID) e criados pela Mãe (ID) */
+function dadosLink(ref) {
+  const c = cfg();
+  if (ref === 'filho') return {nome:'Portal dos Filhos', url:linkPortal('filho'), msg:`Axé! Este é o portal dos filhos da ${c.casa}: ${linkPortal('filho')}\nEntre com o seu número de celular.`};
+  if (ref === 'consulta') return {nome:'Agendamento', url:linkPortal('consulta'), msg:`Agende sua consulta com as entidades da ${c.casa}: ${linkPortal('consulta')}`};
+  if (ref.startsWith('ent:')) { const e = DB.get('entidades', ref.slice(4)) || {nome:''}; return {nome:e.nome, url:linkEntidade(e.id), msg:`Agende sua consulta com ${e.nome} na ${c.casa}: ${linkEntidade(e.id)}`}; }
+  const l = DB.get('links', ref) || {}; const url = urlDoLink(l);
+  return {nome:l.nome, url, msg:`${l.texto || l.nome}: ${url}`, l};
+}
+function acaoLink(ref, acao) {
+  const d = dadosLink(ref);
+  if (acao === 'copiar') copiar(d.url, 'Link copiado.');
+  else if (acao === 'qr') baixarQR(d.url, d.nome);
+  else if (acao === 'whats') window.open(wa('', d.msg), '_blank', 'noopener');
+  else if (acao === 'cartaz') {
+    if (ref === 'filho' || ref === 'consulta') imprimirQR(ref);
+    else if (ref.startsWith('ent:')) imprimirQR('consulta', ref.slice(4));
+    else imprimirCartaz(d.nome, d.l.texto || 'Aponte a câmera do celular para abrir.', d.url);
+  }
+}
+const botoesLink = (ref, url) => `<button class="btn-ico" onclick="acaoLink('${ref}','copiar')">Copiar link</button><a class="btn-ico" href="${esc(url)}" target="_blank" rel="noopener">Abrir</a><button class="btn-ico" onclick="acaoLink('${ref}','whats')">Enviar no WhatsApp</button><button class="btn-ico" onclick="acaoLink('${ref}','qr')">Baixar QR Code</button><button class="btn-ico" onclick="acaoLink('${ref}','cartaz')">Imprimir cartaz</button>`;
+function mLinks() {
+  const itens = [['filho','Portal dos Filhos','Mensalidades, conta da loja, agenda e mural. Cada filho entra com o celular cadastrado.'], ['consulta','Agendamento de consultas','Página aberta para os consulentes marcarem consulta com as entidades.']];
+  const ents = DB.all('entidades').filter(e => e.ativa !== false).sort(byNome);
+  const meus = DB.all('links').sort((a, b) => (b.criadoEm || '').localeCompare(a.criadoEm || ''));
+  return `<section class="sec"><div class="cal-cab"><h2>Links e QR Codes</h2><button class="btn" onclick="formLink()">Criar novo link</button></div><p class="sub">Todos os links e QR Codes são criados automaticamente. Se os portais estiverem em outro endereço, ajuste em Configurações.</p></section>
+  <div class="links-grid">${itens.map(([k, t, d]) => `<article class="link-card"><div class="qr-link">${qrImg(linkPortal(k))}</div><div class="link-info"><h3>${t}</h3><p class="sub">${d}</p><div class="url">${esc(linkPortal(k))}</div><div class="item-a">${botoesLink(k, linkPortal(k))}</div></div></article>`).join('')}</div>
+  <section class="sec"><div class="cal-cab"><h2>Meus links</h2><button class="btn-ico" onclick="formLink()">Criar novo link</button></div><p class="sub">Links para o que a casa precisar: Instagram, localização, WhatsApp, uma festa ou a agenda de uma entidade. O QR Code de cada um aparece na hora.</p>
+    ${meus.length ? meus.map(l => { const url = urlDoLink(l), e = l.tipo === 'entidade' && DB.get('entidades', l.entidadeId); return `<div class="item item-link"><div class="qr-mini">${qrImg(url)}</div><div class="item-p"><b>${esc(l.nome)}</b><span class="meta">${TIPOS_LINK[l.tipo] || ''}${e ? ': ' + esc(e.nome) : ''}</span><span class="meta url-curta">${esc(url)}</span></div><div class="item-a">${botoesLink(l.id, url)}<button class="btn-ico" onclick="formLink('${l.id}')">Editar</button></div></div>`; }).join('') : '<p class="vazio">Nenhum link criado ainda. Toque em "Criar novo link".</p>'}</section>
+  ${ents.length ? `<section class="sec"><h2>Link direto de cada entidade</h2><p class="sub">Abre o agendamento com a entidade já escolhida. Criado automaticamente para cada entidade cadastrada.</p>
+    ${ents.map(e => `<div class="item item-link"><div class="qr-mini">${qrImg(linkEntidade(e.id))}</div><div class="item-p"><b class="${ehPadilha(e) ? 'ent-cor-padilha' : ''}">${esc(e.nome)}</b><span class="meta url-curta">${esc(linkEntidade(e.id))}</span></div><div class="item-a">${botoesLink('ent:' + e.id, linkEntidade(e.id))}</div></div>`).join('')}</section>` : ''}`;
+}
+function formLink(id) {
+  const l = id ? DB.get('links', id) : {tipo:'externo'}, c = cfg(), ents = DB.all('entidades').sort(byNome);
+  modal(id ? 'Editar link' : 'Criar novo link', `
+    <label>Nome do link<input name="nome" required value="${esc(l.nome)}" placeholder="Ex.: Instagram da casa, Festa de Cosme e Damião"></label>
+    <label>Para onde o link leva<select name="tipo" onchange="camposLink(this.value)">${Object.entries(TIPOS_LINK).map(([k, n]) => `<option value="${k}" ${l.tipo === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <div class="cl cl-entidade"><label>Entidade<select name="entidadeId">${ents.map(e => `<option value="${e.id}" ${l.entidadeId === e.id ? 'selected' : ''}>${esc(e.nome)}</option>`).join('')}</select></label></div>
+    <div class="cl cl-whatsapp"><label>Celular (WhatsApp)<input name="tel" inputmode="tel" value="${esc(fmtTel(l.tel || c.telCasa))}" placeholder="(45) 99999-9999"></label><label>Mensagem que já vem escrita (opcional)<input name="msg" value="${esc(l.msg)}" placeholder="Ex.: Olá! Quero saber sobre a gira de sexta."></label></div>
+    <div class="cl cl-externo"><label>Endereço do link<input name="url" inputmode="url" value="${esc(l.url)}" placeholder="Ex.: https://instagram.com/casavovochica"></label><p class="sub" style="margin-top:-6px">Pode ser o Instagram, a localização no Google Maps, um site ou qualquer outro link.</p></div>
+    <label>Texto do cartaz (opcional)<input name="texto" value="${esc(l.texto)}" placeholder="Ex.: Siga a casa no Instagram"></label>`,
+  async d => {
+    const novo = {nome:d.nome.trim(), tipo:d.tipo, texto:(d.texto || '').trim(), criadoEm:l.criadoEm || new Date().toISOString()};
+    if (d.tipo === 'entidade') { if (!d.entidadeId) { toast('Cadastre uma entidade primeiro.'); return false; } novo.entidadeId = d.entidadeId; }
+    if (d.tipo === 'whatsapp') { const t = normTel(d.tel); if (t.length < 10) { toast('Informe o celular com DDD.'); return false; } novo.tel = t; novo.msg = (d.msg || '').trim(); }
+    if (d.tipo === 'externo') { let u = (d.url || '').trim(); if (!u) { toast('Informe o endereço do link.'); return false; } if (!/^https?:\/\//i.test(u)) u = 'https://' + u; try { new URL(u); } catch (e) { toast('Endereço inválido. Confira o link.'); return false; } novo.url = u; }
+    await DB.set('links', id, novo);
+    toast(id ? 'Link atualizado.' : 'Link criado. O QR Code já está pronto.');
+  }, id ? `<button type="button" class="btn perigo" onclick="excluir('links','${id}','Excluir este link? Quem já tem o QR Code impresso continua acessando o endereço, mas ele some desta lista.')">Excluir</button>` : '', id ? 'Salvar' : 'Criar link');
+  camposLink(l.tipo);
+}
+function camposLink(t) { document.querySelectorAll('#mf .cl').forEach(e => e.hidden = !e.classList.contains('cl-' + t)); }
 
 /* ---------- início ---------- */
 (async () => {
